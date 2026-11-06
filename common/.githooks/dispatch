@@ -1,0 +1,12 @@
+#!/bin/sh
+# Probe the interpreter, including Windows installations with an unusable alias.
+if command -v py >/dev/null 2>&1 && py -c 'import sys; sys.exit(sys.version_info.major != 3)' >/dev/null 2>&1; then
+    PY=py
+elif command -v python >/dev/null 2>&1 && python -c 'import sys; sys.exit(sys.version_info.major != 3)' >/dev/null 2>&1; then
+    PY=python
+else
+    echo 'Git hooks require Python 3 (py or python).' >&2
+    exit 1
+fi
+export PY
+exec "$PY" "$(dirname "$0")/dispatch.py" "$@"
