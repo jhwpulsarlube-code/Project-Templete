@@ -22,6 +22,9 @@ class GitHooksTest(unittest.TestCase):
         self.hooks = self.repo / ".githooks"
         if SOURCE.exists():
             shutil.copytree(SOURCE, self.hooks)
+        # Dispatcher tests supply their own common check. Distribution checking
+        # through real consumer commits is covered separately in test_drift.py.
+        self.common_check('raise SystemExit(0)\n')
 
     def git(self, *args, **kwargs):
         return subprocess.run(

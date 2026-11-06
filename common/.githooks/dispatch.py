@@ -29,7 +29,7 @@ def main() -> int:
     # after an earlier process consumes its input completely.
     data = sys.stdin.buffer.read()
     result = subprocess.run(
-        [os.environ["PY"], str(directory / "common_checks.py"), hook, *arguments],
+        [os.environ["PY"], '-B', str(directory / "common_checks.py"), hook, *arguments],
         input=data,
     )
     if result.returncode:

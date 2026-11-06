@@ -83,6 +83,25 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(self.git(self.consumer, 'rev-parse', 'HEAD').stdout, head)
         self.assertEqual(self.git(self.consumer, 'show-ref').stdout, refs)
 
+    def test_deployed_hook_commits_and_blocks_without_source_repository(self):
+        self.env.pop('PYTHONDONTWRITEBYTECODE', None)
+        self.git(self.consumer, 'config', 'core.hooksPath', '.githooks')
+        result = self.sync()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Windows Git object files are read-only; remove this isolated fixture
+        # entirely so no source repository remains available to the hook.
+        for path in self.source.rglob('*'):
+            if path.is_file():
+                path.chmod(0o666)
+        shutil.rmtree(self.source)
+        result = self.git(self.consumer, 'commit', '--allow-empty', '-qm', 'standalone', check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (self.consumer / 'docs/agents/domain.md').write_bytes(b'changed distribution\n')
+        self.git(self.consumer, 'add', '.')
+        result = self.git(self.consumer, 'commit', '-qm', 'blocked', check=False)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b'docs/agents/domain.md', result.stderr)
+
     def test_first_deployment_is_one_commit_and_retry_has_no_changes(self):
         parent = self.git(self.consumer, 'rev-parse', 'HEAD').stdout.strip().decode()
         source_sha = self.git(self.source, 'rev-parse', 'HEAD').stdout.strip().decode()
