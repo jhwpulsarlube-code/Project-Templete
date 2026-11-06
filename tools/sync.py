@@ -135,10 +135,12 @@ def deployment_files(source_tree: Tree, consumer_tree: Tree, sha: str) -> dict[s
     return files
 
 
-def verify(consumer: Path, files: dict[str, bytes]) -> None:
+def verify(consumer: Path, files: dict[str, bytes], deletions: list[str]) -> None:
     """Normal byte comparison and regeneration, with no force bypass."""
     drift = [path for path, content in files.items()
              if not (consumer / path).is_file() or (consumer / path).read_bytes() != content]
+    drift.extend(path for path in deletions
+                 if (consumer / path).exists() or (consumer / path).is_symlink())
     generated = compose({path: (consumer / path).read_bytes() for path in (
         '.claude/compose-settings.py', '.claude/settings.common.json', PROJECT)})
     if (consumer / SETTINGS).read_bytes() != generated:
@@ -233,7 +235,7 @@ def main() -> int:
             expected = deployment_files(tree, current_tree, sha)
             actual = current_tree.contents([path for path in expected if path in current_tree.entries])
             if actual == expected and git(consumer, 'merge-base', base, head).decode().strip() == base:
-                verify(consumer, expected)
+                verify(consumer, expected, sorted(set(previous) - set(expected)))
                 print('No changes')
                 return 0
         changes = {}
@@ -325,7 +327,7 @@ def main() -> int:
             mode = tree.entries.get('common/' + path, ('100644', ''))[0]
             if os.name != 'nt':
                 target.chmod(0o755 if mode == '100755' else 0o644)
-        verify(consumer, files)
+        verify(consumer, files, deletions)
         staged_paths = list(changes) + [path for path in deletions if path in base_tree.entries]
         git(consumer, 'add', '-A', '-f', '--', *staged_paths)
         for mode, flag in [('100644', '-x'), ('100755', '+x')]:
@@ -339,7 +341,7 @@ def main() -> int:
         git(consumer, 'commit', '-m', f'Deploy workflow assets from {sha}')
         commit = git(consumer, 'rev-parse', 'HEAD').decode().strip()
         try:
-            verify(consumer, files)
+            verify(consumer, files, deletions)
             if Tree.read(consumer, commit).entries != staged.entries or clean_errors(consumer, 'Consumer'):
                 raise ValueError('Git hooks changed the deployment commit or working tree')
         except (OSError, ValueError) as error:
