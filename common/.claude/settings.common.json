@@ -1,0 +1,67 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/inject_coding_standards.py\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_scratch_layout.py\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_main_branch.py\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_main_branch.py\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_temp_write.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -B \"$CLAUDE_PROJECT_DIR/.claude/hooks/inject_coding_standards.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
