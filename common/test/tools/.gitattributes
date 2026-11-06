@@ -1,0 +1,14 @@
+.gitattributes text eol=lf
+affected_scope.py text eol=lf
+asm_compare.py text eol=lf
+check_encoding.py text eol=lf
+check_mutation_review.py text eol=lf
+check_ticket_links.py text eol=lf
+compare_reports.py text eol=lf
+exhaustive_mutation.py text eol=lf
+invalid_cause.py text eol=lf
+red_proof.py text eol=lf
+repo_temp.py text eol=lf
+schemata.py text eol=lf
+stack_depth.py text eol=lf
+verification_snapshot.py text eol=lf
