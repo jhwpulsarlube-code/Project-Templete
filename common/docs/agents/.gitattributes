@@ -1,0 +1,11 @@
+.gitattributes text eol=lf
+code-review-smells.md text eol=lf
+domain.md text eol=lf
+host-test-workflow.md text eol=lf
+issue-tracker.md text eol=lf
+mutation-tool-reference.md text eol=lf
+pull-request.md text eol=lf
+review-host-tests.md text eol=lf
+scratch-layout.md text eol=lf
+temp-hygiene.md text eol=lf
+triage-labels.md text eol=lf
