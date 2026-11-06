@@ -337,6 +337,137 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(self.git(self.consumer, 'rev-parse', 'HEAD').stdout, base)
         self.assertEqual((self.consumer / 'docs/agents/domain.md').read_bytes(), b'hook edit\n')
 
+    def test_hook_cannot_restore_an_ignored_retired_asset(self):
+        retired = 'docs/agents/domain.md'
+        result = self.sync()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (self.consumer / '.gitignore').write_bytes((retired + '\n').encode())
+        extension = self.consumer / '.githooks/post-commit.d/10-restore'
+        extension.parent.mkdir(parents=True)
+        extension.write_bytes(("printf 'restored by hook\\n' > " + retired + '\n').encode())
+        self.commit(self.consumer)
+        self.git(self.consumer, 'push', '-q', 'origin', 'HEAD:main')
+        self.git(self.consumer, 'config', 'core.hooksPath', '.githooks')
+        (self.source / 'common' / retired).unlink()
+        self.commit(self.source)
+        base = self.git(self.consumer, 'rev-parse', 'HEAD').stdout
+        result = self.sync()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('Post-commit verification failed', result.stderr)
+        self.assertIn(retired, result.stderr)
+        self.assertEqual(self.git(self.consumer, 'rev-parse', 'HEAD').stdout, base)
+        self.assertEqual((self.consumer / retired).read_bytes(), b'restored by hook\n')
+
+    def test_retry_detects_an_ignored_retired_asset_restored_after_deployment(self):
+        retired = 'docs/agents/domain.md'
+        result = self.sync()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (self.consumer / '.gitignore').write_bytes((retired + '\n').encode())
+        self.commit(self.consumer)
+        self.git(self.consumer, 'push', '-q', 'origin', 'HEAD:main')
+        (self.source / 'common' / retired).unlink()
+        self.commit(self.source)
+        result = self.sync()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (self.consumer / retired).write_bytes(b'restored after deployment\n')
+        before = self.snapshot(self.consumer)
+        head = self.git(self.consumer, 'rev-parse', 'HEAD').stdout
+        for flags in [('--dry-run',), ('--force',)]:
+            result = self.sync(*flags)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn(retired, result.stderr)
+            self.assertEqual(self.snapshot(self.consumer), before)
+            self.assertEqual(self.git(self.consumer, 'rev-parse', 'HEAD').stdout, head)
+
+    def test_forced_update_protects_all_drift_and_preserves_project_files(self):
+        result = self.sync()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        changed = 'docs/agents/domain.md'
+        missing = 'docs/agents/triage-labels.md'
+        retired_changed = 'docs/agents/issue-tracker.md'
+        retired_missing = 'tools/issue-status.ps1'
+        for path in (changed, retired_changed):
+            (self.consumer / path).write_bytes(b'consumer change\r\n')
+        for path in (missing, retired_missing):
+            (self.consumer / path).unlink()
+        project_files = {
+            'docs/agents/project.md': b'project documentation\n',
+            '.githooks/pre-commit.d/10-project': b'exit 0\n',
+            '.claude/machine_checks.py': b'def capabilities(): return {}\n',
+        }
+        for path, content in project_files.items():
+            target = self.consumer / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        self.commit(self.consumer)
+        self.git(self.consumer, 'push', '-q', 'origin', 'HEAD:main')
+        base = self.git(self.consumer, 'rev-parse', 'HEAD').stdout.strip()
+        for path in (retired_changed, retired_missing):
+            (self.source / 'common' / path).unlink()
+        (self.source / 'common' / changed).write_bytes(b'updated canonical asset\n')
+        (self.source / 'common/docs/agents/new.md').write_bytes(b'new canonical asset\n')
+        common = self.source / 'common/.claude/settings.common.json'
+        settings = json.loads(common.read_bytes())
+        settings.setdefault('env', {})['COMMON_REVISION'] = 'updated'
+        common.write_text(json.dumps(settings), encoding='utf-8')
+        self.commit(self.source)
+        before = self.snapshot(self.consumer)
+        refs = self.git(self.consumer, 'show-ref').stdout
+        for flags in [('--dry-run',), ()]:
+            result = self.sync(*flags)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertEqual({line for line in result.stdout.splitlines() if line.startswith('BLOCK ')},
+                             {'BLOCK ' + path for path in (changed, missing, retired_changed, retired_missing)})
+            self.assertEqual(self.snapshot(self.consumer), before)
+            self.assertEqual(self.git(self.consumer, 'show-ref').stdout, refs)
+        preview = self.sync('--force', '--dry-run')
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertEqual(self.snapshot(self.consumer), before)
+        result = self.sync('--force')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        def plan(output):
+            return [line for line in output.splitlines()
+                    if line.startswith(('ADD ', 'UPDATE ', 'DELETE ', 'BLOCK ', 'ADOPT '))]
+
+        self.assertEqual(plan(result.stdout), plan(preview.stdout))
+        self.assertEqual(self.git(self.consumer, 'rev-parse', 'HEAD^').stdout.strip(), base)
+        for path, content in project_files.items():
+            self.assertEqual((self.consumer / path).read_bytes(), content)
+        for path in (retired_changed, retired_missing):
+            self.assertFalse((self.consumer / path).exists())
+        for path, content in self.snapshot(self.source / 'common').items():
+            self.assertEqual((self.consumer / path).read_bytes(), content, path)
+        settings = json.loads((self.consumer / '.claude/settings.json').read_bytes())
+        self.assertEqual(settings['env']['COMMON_REVISION'], 'updated')
+        record = json.loads((self.consumer / RECORD).read_bytes())
+        self.assertEqual(record['source_commit'], self.git(self.source, 'rev-parse', 'HEAD').stdout.strip().decode())
+        self.assertEqual(set(record['files']), set(self.snapshot(self.source / 'common')) | {'.claude/settings.json'})
+        for path, digest in record['files'].items():
+            self.assertEqual(digest, hashlib.sha256((self.consumer / path).read_bytes()).hexdigest())
+        head = self.git(self.consumer, 'rev-parse', 'HEAD').stdout
+        result = self.sync()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('No changes', result.stdout)
+        self.assertEqual(self.git(self.consumer, 'rev-parse', 'HEAD').stdout, head)
+
+    def test_project_input_without_regeneration_blocks_settings(self):
+        result = self.sync()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (self.consumer / '.claude/settings.project.json').write_bytes(b'{"env":{"NEW_INPUT":"yes"}}\n')
+        self.commit(self.consumer)
+        self.git(self.consumer, 'push', '-q', 'origin', 'HEAD:main')
+        (self.source / 'change.txt').write_bytes(b'new source revision\n')
+        self.commit(self.source)
+        before = self.snapshot(self.consumer)
+        result = self.sync('--dry-run')
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('BLOCK .claude/settings.json', result.stdout)
+        self.assertEqual(self.snapshot(self.consumer), before)
+        result = self.sync('--force')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        settings = json.loads((self.consumer / '.claude/settings.json').read_bytes())
+        self.assertEqual(settings['env']['NEW_INPUT'], 'yes')
+
     def test_generated_settings_use_current_project_input_instead_of_record_hash(self):
         result = self.sync()
         self.assertEqual(result.returncode, 0, result.stderr)
