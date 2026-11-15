@@ -348,6 +348,9 @@ def plan(source, tokens, items, lvalues=None, macros=None):
         statics += statement_ranges(tokens, opening, closing, {"static"})
     sites = []
     for ident, mutant in items:
+        if mutant.operator in ("inert", "additive"):
+            sites.append(Site(ident, "stmt", mixed="whole body or repeated statement"))
+            continue
         low = bisect.bisect_left(starts, mutant.start)
         high = bisect.bisect_left(starts, mutant.end) - 1
         body = next(((o, c) for o, c in bodies if o < low and high < c), None)
@@ -481,15 +484,21 @@ def wrap(builder, source, node):
 
 
 def kill_guard(source, name):
-    """kill probe 를 스키마타에 넣는 자리: (삽입 오프셋, 삽입 텍스트). 함수 본문 첫 줄에서 인자를 소비하고 돌아온다.
-    공개 void 함수만 대상이다(em.kill_probe 와 같은 선택)."""
+    """Insert an inert void or scalar kill probe at the start of a public function."""
     tokens = em.tokenize(source)
-    for function, is_static, is_void, parameters, opening, closing in em.functions(tokens):
-        if (name is None and is_void and not is_static) or function == name:
-            body = "".join(" (void){};".format(p) for p in parameters)
-            return function, tokens[opening].end, \
-                " if ({} == {}) {{{} return; }}".format(VAR, KILL_PROBE_ID, body)
-    raise ValueError("inert 로 만들 공개 void 함수가 없다: {}".format(name))
+    for function, is_static, _is_void, _parameters, opening, _closing in em.functions(tokens):
+        if name is not None and function != name:
+            continue
+        try:
+            inert = em.inert_body(source, function, public_only=True)
+            body = inert[1:-1].strip()
+            if not em.probe_return(source, function):
+                body = (body + " return;").strip()
+        except ValueError:
+            continue
+        return function, tokens[opening].end, \
+            " if ({} == {}) {{ {} }}".format(VAR, KILL_PROBE_ID, body)
+    raise ValueError("inert 로 만들 공개 void·스칼라 함수가 없다: {}".format(name))
 
 
 def emit(source, sites, guard=None):

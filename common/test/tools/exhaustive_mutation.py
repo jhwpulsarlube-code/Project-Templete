@@ -30,6 +30,7 @@ import json
 import os
 import posixpath
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,10 @@ import time
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import verification_snapshot as vs  # noqa: E402
+try:
+    import switch_gate  # noqa: E402
+except ImportError:
+    switch_gate = None
 
 ROOT = Path(__file__).resolve().parents[2]
 # docs/agents/host-test-project.md 무접촉 원칙의 제품 경로. `*.c`·`*.h` 는 깊이를 가리지 않으므로
@@ -91,6 +96,7 @@ class Mutant:
 class ConfigResult:
     config: str    # "<test 파일 이름>[<variant>]"
     outcome: str   # pass, build_fail, run_fail, timeout
+    diagnostic: str = field(default="", compare=False)
 
 
 @dataclass(frozen=True)
@@ -427,12 +433,19 @@ def identified(mutants, tokens):
     return found
 
 
-def generate(source, enums, zeros=frozenset()):
+def generate(source, enums, zeros=frozenset(), type_source=None):
     tokens = tokenize(source)
     siblings = {name: family for family in enums for name in family}
     named = []
     for function, _, _, _, opening, closing in functions(tokens):
         mutants = []
+        try:
+            body = inert_body(source, function, type_source, public_only=False)
+        except ValueError:
+            pass
+        else:
+            mutants.append(make_mutant(source, "inert", tokens[opening].start,
+                                       tokens[closing].end, body))
         for position in call_arguments(tokens, opening, closing):
             token = tokens[position]
             if token.text in siblings:
@@ -452,6 +465,17 @@ def generate(source, enums, zeros=frozenset()):
         for first, semicolon in statements(tokens, opening, closing):
             mutants.append(make_mutant(source, "statement", tokens[first].start,
                                        tokens[semicolon].end, ";"))
+            words = tokens[first:semicolon]
+            assignment = any(token.text in ("=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=")
+                            for token in words)
+            call = any(token.kind == "id" and token.text not in KEYWORDS and
+                       index + 1 < len(words) and words[index + 1].text == "("
+                       for index, token in enumerate(words))
+            if words[0].text not in KEYWORDS and (assignment or call):
+                statement = source[tokens[first].start:tokens[semicolon].end]
+                mutants.append(make_mutant(source, "additive", tokens[first].start,
+                                           tokens[semicolon].end,
+                                           "{ " + statement + " " + statement + " }"))
         for position in range(opening + 1, closing):
             token = tokens[position]
             if token.text in ARITHMETIC and ends_operand(tokens[position - 1]):
@@ -500,27 +524,105 @@ def functions(tokens):
     return found
 
 
-def kill_probe(source, name=None):
-    """반드시-죽는 probe(양성 대조): 공개 void 함수 하나(기본은 첫 번째)의 본문을 비운다. 인자는
-    -Wunused-parameter 로 invalid 가 되지 않게 (void) 로 소비한다."""
+def return_type(tokens, opening):
+    left = opening - 1
+    depth = 0
+    while True:
+        depth += {")": 1, "(": -1}.get(tokens[left].text, 0)
+        if depth == 0:
+            break
+        left -= 1
+    start = left - 1
+    while start > 0 and tokens[start - 1].text not in (";", "}"):
+        start -= 1
+    return [token.text for token in tokens[start:left - 1]
+            if token.text not in ("static", "extern", "inline", "const", "volatile", "restrict")]
+
+
+def scalar_type(words, declarations, seen=frozenset()):
+    if "*" in words and not any(word in words for word in ("(", ")", "[", "]")):
+        return True
+    if not words or any(word in words for word in ("{", "[", "(", "struct", "union")):
+        return False
+    builtins = {"signed", "unsigned", "char", "short", "int", "long", "float", "double", "_Bool"}
+    if set(words) <= builtins or words[0] == "enum":
+        return True
+    if len(words) != 1 or words[0] in seen:
+        return False
+    alias = words[0]
+    macro = re.search(r"^\s*#\s*define\s+" + re.escape(alias) + r"[ \t]+([^\n]+)",
+                      declarations, re.M)
+    if macro:
+        return scalar_type([token.text for token in tokenize(macro.group(1))],
+                           declarations, seen | {alias})
+    tokens = tokenize(declarations)
+    for index, token in enumerate(tokens):
+        if token.text != "typedef":
+            continue
+        end, depth = index + 1, 0
+        while end < len(tokens):
+            part = tokens[end].text
+            if part == ";" and depth == 0:
+                break
+            depth += {"{": 1, "}": -1}.get(part, 0)
+            end += 1
+        if end < len(tokens) and tokens[end - 1].text == alias:
+            words = [part.text for part in tokens[index + 1:end - 1]
+                     if part.text not in ("const", "volatile", "restrict")]
+            return scalar_type(words, declarations, seen | {alias})
+    return False
+
+
+def probe_return(source, name, type_source=None, public_only=True):
     tokens = tokenize(source)
-    for function, is_static, is_void, parameters, opening, closing in functions(tokens):
-        if (name is None and is_void and not is_static) or function == name:
-            body = "".join(" (void){};".format(p) for p in parameters)
-            return function, (source[:tokens[opening].start] + "{" + body + " }" +
-                              source[tokens[closing].end:])
-    raise ValueError("inert 로 만들 공개 void 함수가 없다: {}".format(name))
+    for function, is_static, is_void, _, opening, _ in functions(tokens):
+        if function != name:
+            continue
+        if is_static and public_only:
+            break
+        if is_void:
+            return ""
+        words = return_type(tokens, opening)
+        if scalar_type(words, type_source if type_source is not None else source):
+            return "return ({})0;".format(" ".join(words))
+        break
+    raise ValueError("inert 로 만들 void·스칼라 함수가 없다: {}".format(name))
 
 
-def live_kill_probes(source, regions, active):
+def inert_body(source, name, type_source=None, public_only=True):
+    statement = probe_return(source, name, type_source, public_only)
+    parameters = next(params for function, _, _, params, _, _ in functions(tokenize(source))
+                      if function == name)
+    return "{" + "".join(" (void){};".format(param) for param in parameters) + " " + statement + " }"
+
+
+def kill_probe(source, name=None, type_source=None):
+    """Positive control: inert a public void or scalar function and consume its parameters."""
+    tokens = tokenize(source)
+    for function, is_static, _is_void, _parameters, opening, closing in functions(tokens):
+        if name is not None and function != name:
+            continue
+        try:
+            body = inert_body(source, function, type_source)
+        except ValueError:
+            continue
+        return function, source[:tokens[opening].start] + body + source[tokens[closing].end:]
+    raise ValueError("inert 로 만들 공개 void·스칼라 함수가 없다: {}".format(name))
+
+
+def live_kill_probes(source, regions, active, type_source=None):
     """kill probe 후보: 정의가 어떤 구성에서 실제로 컴파일되는 공개 void 함수를 파일 순서로. `#if !defined
     (__inline__x)` 안의 정의처럼 모든 구성에서 비활성이면 비워도 아무것도 바뀌지 않아 probe 가 죽지 못한다
     (option.c 의 `option_timer__xms`: 1 ms ISR 이 매크로 판본을 쓴다). 활성이어도 테스트가 부르지 않는 함수는
     죽지 못하므로(option.c 의 JIG 함수) 호출자는 후보를 순서대로 시도해 죽는 첫 함수를 쓴다."""
     tokens = tokenize(source)
     found = []
-    for function, is_static, is_void, _, opening, _ in functions(tokens):
-        if is_void and not is_static:
+    for function, is_static, _is_void, _, opening, _ in functions(tokens):
+        try:
+            probe_return(source, function, type_source)
+        except ValueError:
+            continue
+        if not is_static:
             line = source.count("\n", 0, tokens[opening].start) + 1
             if regions.get(line) in (None, *active):
                 found.append(function)
@@ -639,6 +741,8 @@ class Report:
     method: str = "per-mutant"   # per-mutant | schemata
     timing: dict = None   # 단계별 누적 초와 벽시계(run 이 채운다)
     schemata: dict = None   # 스키마타 모드의 감싼·혼합 변이 수와 컴파일 라운드
+    excluded_macros: list = field(default_factory=list)
+    switches: object = None
 
     @property
     def valid(self):
@@ -646,6 +750,20 @@ class Report:
 
     def count(self, status):
         return sum(1 for r in self.results if r.verdict.status == status)
+
+
+def report_exit_code(report):
+    """Return a stable command status for invalid runs and unreviewed selected survivors."""
+    if not report.valid:
+        return 2
+    switches = getattr(report, "switches", None)
+    if switches is not None and not getattr(switches, "accepted", True):
+        return 4
+    if report.functions and report.comparison is not None:
+        if (report.comparison.new or report.comparison.safety_unreviewed or
+                getattr(report.comparison, "selected_unreviewed", [])):
+            return 3
+    return 0
 
 
 # ---------------------------------------------------------------------------------------------
@@ -683,7 +801,7 @@ def parse_baseline(data, target):
     """{키 튜플: 항목} 을 파일 순서대로 낸다. 형식이 틀리면 BaselineError."""
     if not isinstance(data, dict) or data.get("target") != target:
         raise BaselineError("기준선 target 이 대상 {!r} 와 다르다".format(target))
-    items = data.get("survivors", [])
+    items = data.get("survivors")
     if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
         raise BaselineError("기준선 survivors 는 객체의 목록이다")
     entries = {}
@@ -699,7 +817,7 @@ def parse_baseline(data, target):
         if key in entries:
             raise BaselineError("{}: 키 중복 {}".format(where, key))
         state = item.get("state")
-        if state not in STATES:
+        if not isinstance(state, str) or state not in STATES:
             raise BaselineError("{}: state {!r} 는 {} 중 하나여야 한다".format(
                 where, state, ", ".join(STATES)))
         for name in ("reason", "ledger") + STATES[state]:
@@ -728,9 +846,25 @@ def safety_functions(text):
         raise ToolError('docs/agents/host-test-project.md 에 "### 안전 경로" 절이 없다 — 도구가 이 절의 표를 읽는다'
                         "(표가 비어 있어도 된다)")
     section = found.group()
-    for match in re.finditer(r"^\|\s*`([^`]+)`\s*\|(.*)\|\s*$", section, re.M):
-        table[match.group(1)] = set(re.findall(r"`([^`]+)`", match.group(2)))
+    for line in section.splitlines():
+        columns = [column.strip() for column in line.strip().strip("|").split("|")]
+        if len(columns) < 2 or not (columns[0].startswith("`") and columns[0].endswith("`")):
+            continue
+        path = columns[0][1:-1]
+        if path in table:
+            raise ToolError("안전 경로 표에 중복 경로가 있다: {}".format(path))
+        table[path] = set(re.findall(r"`([^`]+)`", columns[1]))
     return table
+
+
+def project_host_test_policy(root):
+    """Read the current project policy, with the pre-deployment file as a compatibility fallback."""
+    root = Path(root)
+    for relative in ("docs/agents/host-test-project.md", "test/AGENTS.md"):
+        path = root / relative
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    raise ToolError("호스트 테스트 프로젝트 규칙을 찾지 못했다: docs/agents/host-test-project.md 또는 test/AGENTS.md")
 
 
 def unmeasurable_safety_functions(text):
@@ -767,6 +901,7 @@ class Comparison:
     disappeared: list         # (기준선 항목, 현재 상태: killed·invalid·비활성 분기·미생성)
     safety_unreviewed: list   # 안전 경로 함수의 생존자 중 기준선에 없거나 미검토인 것
     safety_unmeasured: list = field(default_factory=list)
+    selected_unreviewed: list = field(default_factory=list)
 
 
 def compare(results, inactive, baseline, safety, path=None, scope=None):
@@ -794,8 +929,11 @@ def compare(results, inactive, baseline, safety, path=None, scope=None):
             disappeared.append((item, current))
     unreviewed = [r for r in survivors if r.mutant.function in safety and
                   state(r) in (None, "미검토")]
+    selected_unreviewed = [r for r in survivors
+                            if scope is not None and r.mutant.function in scope
+                            and state(r) in (None, "미검토")]
     return Comparison(path, new, disappeared, unreviewed,
-                      sorted(safety - scope) if scope is not None else [])
+                      sorted(safety - scope) if scope is not None else [], selected_unreviewed)
 
 
 def git(*args, cwd=None):
@@ -922,6 +1060,30 @@ def capture_review_context(worktree, configs, compiler, method="per-mutant"):
                         for c in configs]}
 
 
+CLEANUP_ATTEMPTS = 5
+CLEANUP_WAIT = 0.5
+
+
+@contextmanager
+def scratch_directory(progress=lambda _message: None):
+    """Create an owned output directory and retry transient cleanup failures."""
+    path = tempfile.mkdtemp(prefix="plr-exhaustive-mut-")
+    try:
+        yield path
+    finally:
+        for attempt in range(CLEANUP_ATTEMPTS):
+            try:
+                shutil.rmtree(path)
+                break
+            except FileNotFoundError:
+                break
+            except OSError as error:
+                if attempt == CLEANUP_ATTEMPTS - 1:
+                    progress("경고: 임시 디렉터리를 지우지 못했다 — 직접 지운다: {} ({})".format(path, error))
+                else:
+                    time.sleep(CLEANUP_WAIT * (attempt + 1))
+
+
 def review_context_hash(context):
     return hashlib.sha256(json.dumps(context, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
@@ -934,24 +1096,47 @@ def preprocess(worktree, config, *flags):
     return result.stdout
 
 
-def compile_config(worktree, out, config, syntax_only=False):
+LINK_ATTEMPTS = 5
+LINK_WAIT = 0.5
+LOCK_SIGNATURE = re.compile(r"Permission denied|Text file busy|Device or resource busy|"
+                            r"being used by another process|Access is denied", re.I)
+SOURCE_ERROR = re.compile(r":\d+:\d+: (?:fatal )?error")
+DIAGNOSTIC_TAIL = 600
+
+
+def locked(stderr):
+    return LOCK_SIGNATURE.search(stderr) is not None and SOURCE_ERROR.search(stderr) is None
+
+
+def compile_config(worktree, out, config, syntax_only=False, diagnostics=None):
     """구성 하나를 게이트 플래그 그대로 컴파일한다. (성공 여부, 컴파일 초). 도구·환경 오류는 ToolError.
     syntax_only 는 -fsyntax-only 로 전단(front-end) 오류·경고만 본다 — 실패하면 전체 컴파일도 실패한다."""
     began = time.monotonic()
     exe = os.path.join(out, config["exe"])
-    try:
-        build = subprocess.run(config["base"] + (["-fsyntax-only"] if syntax_only else ["-o", exe]),
-                               cwd=worktree,
-                               capture_output=True, text=True, timeout=120)
-    except FileNotFoundError:
-        raise ToolError("컴파일러가 없다: {}".format(config["base"][0]))
-    except subprocess.TimeoutExpired:
-        raise ToolError("컴파일 timeout(120s): {}".format(config["name"]))
-    return build.returncode == 0, time.monotonic() - began
+    for attempt in range(LINK_ATTEMPTS):
+        try:
+            build = subprocess.run(config["base"] + (["-fsyntax-only"] if syntax_only else ["-o", exe]),
+                                   cwd=worktree, capture_output=True, text=True, timeout=120)
+        except FileNotFoundError:
+            raise ToolError("컴파일러가 없다: {}".format(config["base"][0]))
+        except subprocess.TimeoutExpired:
+            raise ToolError("컴파일 timeout(120s): {}".format(config["name"]))
+        if build.returncode == 0:
+            return True, time.monotonic() - began
+        stderr = getattr(build, "stderr", "") or ""
+        if not locked(stderr):
+            if diagnostics is not None:
+                diagnostics.append(stderr[-DIAGNOSTIC_TAIL:])
+            return False, time.monotonic() - began
+        if attempt == LINK_ATTEMPTS - 1:
+            raise ToolError("링크 출력 파일 잠금으로 {}회 시도 후 실패({}): {}".format(
+                LINK_ATTEMPTS, config["name"], stderr[-DIAGNOSTIC_TAIL:]))
+        time.sleep(LINK_WAIT * (attempt + 1))
 
 
 LAUNCH_ATTEMPTS = 5
 LAUNCH_WAIT = 0.5
+BLOCKED_LAUNCH_HINT = 'test/AGENTS.md "머신 설정" 또는 docs/agents/host-test-project.md 에서 백신 차단을 확인한다'
 
 
 def launch(exe, **kwargs):
@@ -961,9 +1146,13 @@ def launch(exe, **kwargs):
     for attempt in range(LAUNCH_ATTEMPTS):
         try:
             return subprocess.run([exe], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs)
-        except PermissionError:
+        except FileNotFoundError as error:
+            raise ToolError("방금 링크한 실행 파일이 사라졌다({}): {}. {}".format(
+                exe, error, BLOCKED_LAUNCH_HINT))
+        except PermissionError as error:
             if attempt == LAUNCH_ATTEMPTS - 1:
-                raise
+                raise ToolError("실행 파일을 {}회 띄우지 못했다({}): {}. {}".format(
+                    LAUNCH_ATTEMPTS, exe, error, BLOCKED_LAUNCH_HINT))
             time.sleep(LAUNCH_WAIT * (attempt + 1))
 
 
@@ -971,10 +1160,11 @@ def run_config(worktree, out, config, run_timeout):
     """(결과, 실행 시간, 컴파일+실행 전체 시간)."""
     began = time.monotonic()
     exe = os.path.join(out, config["exe"])
-    built, compile_seconds = compile_config(worktree, out, config)
+    notes = []
+    built, compile_seconds = compile_config(worktree, out, config, diagnostics=notes)
     TIMING.add("compile" if built else "invalid", compile_seconds)
     if not built:
-        return ConfigResult(config["name"], "build_fail"), 0.0, time.monotonic() - began
+        return ConfigResult(config["name"], "build_fail", "".join(notes)), 0.0, time.monotonic() - began
     started = time.monotonic()
     try:
         run = launch(exe, cwd=worktree, timeout=run_timeout)
@@ -1143,12 +1333,14 @@ def run(target, kill_probe_name=None, progress=None, baseline=None, workers=1, f
         raise ToolError("schemata 는 syntax, survivors, all 중 하나다: {!r}".format(schemata))
     if schemata and screen:
         raise ToolError("--schemata 는 1차 선별(--screen-opt)과 함께 쓰지 않는다")
+    # A previous interrupted measurement may have left the process-wide signal flag set.
+    vs.stopping.clear()
     TIMING.reset()
     started = time.monotonic()
     progress = progress or (lambda message: None)
     path = Path(baseline) if baseline else baseline_path(target)
     entries = load_baseline(path, target)
-    agents = (ROOT / "docs" / "agents" / "host-test-project.md").read_text(encoding="utf-8")
+    agents = project_host_test_policy(ROOT)
     check_measurable(target, unmeasurable_safety_functions(agents))
     safety = safety_functions(agents)
     try:
@@ -1177,7 +1369,7 @@ def run(target, kill_probe_name=None, progress=None, baseline=None, workers=1, f
                     raise ToolError("영향 범위와 안전 경로가 모두 비었다: base {} 대비 {} 에 측정할 "
                                     "함수가 없다".format(derivation.base[:12], target))
         head = git("rev-parse", "HEAD").strip()
-        with ExitStack() as held, tempfile.TemporaryDirectory(prefix="plr-exhaustive-mut-") as out:
+        with ExitStack() as held, scratch_directory(progress) as out:
             with TIMING.span("prepare"):
                 prepared = held.enter_context(current_snapshot("HEAD", target))
             report = measure(prepared, out, target, head, kill_probe_name, progress, context,
@@ -1202,7 +1394,8 @@ def measure(prepared_copy, out, target, head, kill_probe_name, progress, context
     missing = sorted(scope - defined) if scope is not None else []
     if missing:
         raise ToolError("지정한 함수가 {} 에 없다: {}".format(target, ", ".join(missing)))
-    compiler = subprocess.run([runner.CC, "--version"], capture_output=True,
+    compiler_path = configs[0]["base"][0]
+    compiler = subprocess.run([compiler_path, "--version"], capture_output=True,
                               text=True).stdout.splitlines()[0]
     review_context = capture_review_context(worktree, configs, compiler, method)
     progress("구성 {}개: {}".format(len(configs), ", ".join(c["name"] for c in configs)))
@@ -1226,8 +1419,14 @@ def measure(prepared_copy, out, target, head, kill_probe_name, progress, context
 
     # 지정이 없으면 활성 정의를 가진 공개 void 함수 전부가 후보다(없으면 [None] 으로 기존 오류를 낸다).
     probe_names = [kill_probe_name] if kill_probe_name else (
-        live_kill_probes(source, regions, active) or [None])
-    mutants = generate(source, families, zeros)
+        live_kill_probes(source, regions, active, "\n".join(defines)) or [None])
+    type_source = "\n".join(defines)
+    if kill_probe_name:
+        try:
+            probe_return(source, kill_probe_name, type_source)
+        except ValueError as error:
+            raise ToolError(str(error)) from error
+    mutants = generate(source, families, zeros, type_source)
     inactive = [m for m in mutants if regions.get(m.line) not in (None, *active)]
     live = [m for m in mutants if m not in inactive]
     selected = [(index, m) for index, m in enumerate(live, 1)
@@ -1243,6 +1442,11 @@ def measure(prepared_copy, out, target, head, kill_probe_name, progress, context
                     skipped=sum(1 for m in mutants if scope is not None and m.function not in scope))
     report.review_context = review_context
     report.method = method
+    report.excluded_macros = re.findall(r"^\s*#\s*define\s+([A-Za-z_]\w*)", source, re.M)
+    if switch_gate is not None:
+        report.switches = switch_gate.check(worktree, "변이 사본")
+        if not report.switches.accepted:
+            progress(switch_gate.warning(report.switches))
     bench = Bench(worktree, out, target, configs, screen)
     count = min(workers, len(selected)) - 1
 
@@ -1252,8 +1456,7 @@ def measure(prepared_copy, out, target, head, kill_probe_name, progress, context
         try:
             with TIMING.span("prepare"):
                 worker = local.enter_context(current_snapshot(head, target))
-                worker_out = local.enter_context(tempfile.TemporaryDirectory(
-                    prefix="plr-exhaustive-mut-"))
+                worker_out = local.enter_context(scratch_directory(progress))
                 return local, Bench(worker.path, worker_out, target, worker.configs, screen)
         except BaseException:
             local.close()
@@ -1331,7 +1534,7 @@ def measure(prepared_copy, out, target, head, kill_probe_name, progress, context
             with TIMING.redirect("baseline"):
                 skipped_probes = []
                 for probe_name in probe_names:
-                    name, text = kill_probe(source, probe_name)
+                    name, text = kill_probe(source, probe_name, type_source)
                     verdict, results, _ = bench.run(text)
                     if verdict.status == "killed" or probe_name == probe_names[-1]:
                         break
@@ -1435,6 +1638,11 @@ def format_report(report):
             report.scope["base"][:12], len(report.scope["starts"]), len(report.scope["derived"]),
             report.scope["fallback"] or "없음", len(report.scope["indirect"])))
     lines.append("- 측정 방식: {}".format(format_method(report)))
+    lines.append("- 매크로 제외: " + (", ".join(report.excluded_macros) or "없음"))
+    if report.switches is not None:
+        lines.append("- 시제품 스위치: {} (검증기 종료 {})".format(
+            "기본값" if report.switches.accepted else "기본값 아님 — 증명으로 인정 안 됨",
+            report.switches.code))
     if report.timing:
         lines.append("- 시간: 벽시계 {}s; 단계별 누적 초(작업자 합) {}".format(
             report.timing["wall"], ", ".join("{} {}".format(k, v) for k, v in
@@ -1535,6 +1743,8 @@ def to_json(report):
         "run_timeout": report.run_timeout, "valid": report.valid,
         "functions": report.functions, "skipped": report.skipped, "scope": report.scope,
         "method": report.method, "timing": report.timing, "schemata": report.schemata,
+        "excluded_macros": report.excluded_macros,
+        "switches": report.switches.to_json() if report.switches is not None else None,
         "review_context": report.review_context,
         "review_context_sha256": review_context_hash(report.review_context),
         "probes": {k: {"expected": p.expected, "description": p.description,
@@ -1578,6 +1788,7 @@ def parse_args(argv=None):
     parser.add_argument("target", help="저장소 루트 기준 제품 .c 경로")
     parser.add_argument("--kill-probe", help="inert 로 만들 공개 함수(기본: 첫 공개 void 함수)")
     parser.add_argument("--json", help="전체 결과를 쓸 JSON 경로")
+    parser.add_argument("--report", help="사람이 읽는 Markdown 보고서 경로")
     parser.add_argument("--baseline",
                         help="생존자 기준선 경로(기본: test/mutation_baselines/<대상>.json)")
     parser.add_argument("--workers", type=int, default=1, help="격리 작업자 수(기본: 1)")
@@ -1646,12 +1857,15 @@ def main():
         print("도구 오류 — 실행 무효: {}".format(error), file=sys.stderr)
         return 1
     if args.json:
-        Path(args.json).write_text(json.dumps(to_json(report), ensure_ascii=False, indent=1),
-                                   encoding="utf-8")
+        with Path(args.json).open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(to_json(report), ensure_ascii=False, indent=1))
         if journal:
             Path(journal).unlink(missing_ok=True)
+    if args.report:
+        with Path(args.report).open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(format_report(report))
     sys.stdout.write(format_report(report))
-    return 0 if report.valid else 2
+    return report_exit_code(report)
 
 
 if __name__ == "__main__":
