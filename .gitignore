@@ -1,2 +1,10 @@
+﻿# Local Claude settings
 .claude/settings.local.json
+
+# Python build and type-checker artifacts
 __pycache__/
+*.py[cod]
+*$py.class
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
