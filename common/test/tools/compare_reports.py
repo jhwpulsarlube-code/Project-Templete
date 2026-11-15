@@ -19,14 +19,30 @@ class ReportError(Exception):
     pass
 
 
+KEY_FIELDS = {"function", "operator", "original", "replacement", "ordinal"}
+
+
 def load_report(path):
     try:
         report = json.loads(Path(path).read_text(encoding="utf-8"))
         results = report["results"]
         # probe 가 실패한 측정은 results 가 비어도 보고서를 쓴다. 그런 두 보고서는 일치로 보이므로 거부한다.
-        if report["valid"] is not True or not results:
+        if report["valid"] is not True or not isinstance(results, list) or not results:
             raise ValueError("valid 가 true 가 아니거나 results 가 비었다")
-        return {r["id"]: (r["key"], r["status"]) for r in results}
+        found = {}
+        for result in results:
+            ident, key, status = result["id"], result["key"], result["status"]
+            if type(ident) not in (str, int) or ident in found or \
+                    (found and type(ident) is not type(next(iter(found)))):
+                raise ValueError("변이 id 형식 오류 또는 중복")
+            if not isinstance(key, dict) or set(key) != KEY_FIELDS or \
+                    not all(isinstance(key[field], str) for field in KEY_FIELDS - {"ordinal"}) or \
+                    type(key["ordinal"]) is not int:
+                raise ValueError("변이 key 는 문자열 네 필드와 정수 ordinal 이 필요하다")
+            if status not in ("killed", "survived", "invalid"):
+                raise ValueError("알 수 없는 변이 판정")
+            found[ident] = (key, status)
+        return found
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise ReportError("{}: 보고서를 읽을 수 없다 ({}: {})".format(
             path, type(error).__name__, error)) from error

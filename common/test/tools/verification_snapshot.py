@@ -17,6 +17,7 @@ import atexit
 import glob
 import importlib.util
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -96,9 +97,21 @@ def _force_writable(function, path, _excinfo):
 
 def remove_worktree(root, temp):
     """임시 폴더 temp 안의 worktree 를 git 에서 등록 해제하고 폴더째 지운다. 이미 없어도 된다."""
-    temp = Path(temp)
-    if (temp / "worktree").exists():
-        subprocess.run(["git", "worktree", "remove", "--force", str(temp / "worktree")],
+    temp = Path(temp).absolute()
+    if not temp.exists() and not temp.is_symlink():
+        return
+    resolved = temp.resolve()
+    if (not temp.name.startswith(WORKTREE_PREFIX)
+            or resolved.parent != temp.parent.resolve()
+            or temp.is_symlink()
+            or not resolved.is_relative_to(Path(tempfile.gettempdir()).resolve())
+            or _owner_pid(temp) is None):
+        raise ToolError("Refusing to remove an unowned worktree directory: {}".format(temp))
+    worktree = temp / "worktree"
+    if worktree.resolve().parent != resolved or worktree.is_symlink():
+        raise ToolError("Worktree path escapes its temporary directory: {}".format(worktree))
+    if worktree.exists():
+        subprocess.run(["git", "worktree", "remove", "--force", str(worktree)],
                        cwd=root, capture_output=True)
     shutil.rmtree(temp, onerror=_force_writable)
     subprocess.run(["git", "worktree", "prune"], cwd=root, capture_output=True)
@@ -114,8 +127,8 @@ def _owner_pid(temp):
 def sweep_stale_worktrees(root=None, temp_root=None, grace=ORPHAN_GRACE):
     """소유 프로세스가 죽은 plr-worktree-* 를 지우고 지운 폴더를 돌려준다.
 
-    owner.pid 가 없는 폴더(이 정리 도입 전의 잔여, 또는 생성 직후)는 grace 초가 지난 것만 지운다.
-    git 에 등록되지 않은 사본도 같은 정책으로 폴더째 지운다."""
+    소유 표시가 없으면 다른 파일을 지울 위험이 있으므로 보존한다.
+    git 에 등록되지 않은 소유 사본도 같은 정책으로 폴더째 지운다."""
     root = ROOT if root is None else root
     temp_root = Path(tempfile.gettempdir() if temp_root is None else temp_root)
     removed = []
@@ -124,13 +137,12 @@ def sweep_stale_worktrees(root=None, temp_root=None, grace=ORPHAN_GRACE):
             continue
         owner = _owner_pid(temp)
         if owner is None:
-            if time.time() - temp.stat().st_mtime < grace:
-                continue
+            continue  # Without an owner marker this directory is not ours to remove.
         elif pid_alive(owner):
             continue
         try:
             remove_worktree(root, temp)
-        except OSError:
+        except (OSError, ToolError):
             continue   # 다른 프로세스가 쥐고 있다. 시작을 막지 말고 다음 실행에 맡긴다
         removed.append(temp)
     return removed
@@ -141,7 +153,7 @@ def _remove_live():
         _live.discard(entry)
         try:
             remove_worktree(*entry)
-        except OSError:
+        except (OSError, ToolError):
             pass   # 다른 프로세스가 쥐고 있으면 다음 실행의 sweep 이 지운다
 
 
@@ -194,7 +206,7 @@ def isolated_worktree(revision, root=None, on_teardown=None):
                 if on_teardown is not None:
                     on_teardown(time.monotonic() - began)
             _live.discard(entry)
-        except OSError:
+        except (OSError, ToolError):
             pass   # 원래 예외를 덮지 않는다. _live 에 남겨 atexit 이 다시 시도하고, 그래도 안 되면 sweep 이 지운다
 
 
@@ -213,6 +225,8 @@ def load_runner(worktree):
 def select_configs(worktree, runner, target):
     """대상 파일을 포함하는 (테스트 TU, variant) 구성. 포함 여부는 grep 이 아니라 러너와 같은
     플래그로 돌린 `gcc -MM` 의존성 목록으로 잰다."""
+    if hasattr(runner, "TEST_CASES"):
+        return select_test_cases(worktree, runner, target)
     wanted = normalized(worktree / target)
     configs = []
     for variant in runner.VARIANTS:
@@ -231,6 +245,40 @@ def select_configs(worktree, runner, target):
                                 "dependencies": words[1:]})
     if not configs:
         raise ToolError("대상 파일을 포함하는 테스트 구성이 없다: {}".format(target))
+    return configs
+
+
+def select_test_cases(worktree, runner, target):
+    """Select configurations from runners that publish explicit test cases."""
+    worktree = Path(worktree).resolve()
+    wanted = normalized(worktree / target)
+    try:
+        compiler = str(runner.find_compiler())
+    except SystemExit as error:
+        raise ToolError(str(error)) from error
+    configs = []
+    for executable, sources, *optional in runner.TEST_CASES:
+        definitions = optional[0] if optional else []
+        flags = getattr(runner, "COMPILER_FLAGS", ["-std=c99", "-Wall", "-Wextra", "-Werror",
+                                                   "-pedantic", "-Isrc/app", "-Isrc/os"])
+        base = [compiler, *flags, *definitions,
+                *(str(worktree / source) for source in sources)]
+        deps = subprocess.run(base + ["-MM"], cwd=worktree, capture_output=True, text=True)
+        if deps.returncode:
+            raise ToolError("Dependency inspection failed: {}\n{}".format(executable, deps.stderr[-2000:]))
+        dependencies = set()
+        rules = deps.stdout.replace("\\\r\n", " ").replace("\\\n", " ")
+        for rule in rules.splitlines():
+            if ": " not in rule:
+                continue
+            for word in re.findall(r"(?:\\.|[^\s])+", rule.split(": ", 1)[1]):
+                word = re.sub(r"\\([ \t#:\\])", r"\1", word)
+                dependencies.add(normalized(worktree / word))
+        if wanted in dependencies:
+            configs.append({"name": Path(executable).stem, "base": base,
+                            "exe": executable, "dependencies": sorted(dependencies)})
+    if not configs:
+        raise ToolError("No test configuration includes target: {}".format(target))
     return configs
 
 
