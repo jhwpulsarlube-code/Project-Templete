@@ -78,9 +78,9 @@ def file_problems(path, staged, parent):
     return problems
 
 
-def git(root, *args, check=True):
+def git(root, *args, check=True, input=None):
     return subprocess.run(["git", "-c", "core.quotePath=false", *args], cwd=root, check=check,
-                          capture_output=True)
+                          capture_output=True, input=input)
 
 
 def staged_files(root):
@@ -137,14 +137,27 @@ def staged_problems(root):
     return problems
 
 
+def declared_binary(root, paths):
+    """.gitattributes 가 `binary`(-text 와 -diff)로 지정한 경로 집합.
+
+    `* -text` 처럼 줄 끝 변환만 끈 저장소의 텍스트 파일은 여기에 들지 않는다.
+    """
+    if not paths:
+        return set()
+    out = git(root, "check-attr", "-z", "--stdin", "diff", input="\0".join(paths).encode("utf-8") + b"\0").stdout
+    fields = out.decode("utf-8").split("\0")
+    return {fields[i] for i in range(0, len(fields) - 2, 3) if fields[i + 2] == "unset"}
+
+
 def all_problems(root):
     problems = []
-    for record in git(root, "ls-files", "--eol", "-z").stdout.decode("utf-8").split("\0"):
-        if not record:
-            continue
-        info, path = record.split("\t", 1)
+    records = [record.split("\t", 1) for record in
+               git(root, "ls-files", "--eol", "-z").stdout.decode("utf-8").split("\0") if record]
+    # NUL 없는 0xFF 채움 같은 바이너리는 index 가 텍스트로 본다. 속성으로 지정한 것만 건너뛴다
+    binary = declared_binary(root, [path for info, path in records if "attr/-text" in info])
+    for info, path in records:
         data = git(root, "show", ":" + path).stdout
-        if info.startswith("i/-text") and Path(path).suffix.lower() not in TEXT_SUFFIXES:
+        if (info.startswith("i/-text") or path in binary) and Path(path).suffix.lower() not in TEXT_SUFFIXES:
             continue
         problems += [(path, number, reason) for number, reason in line_problems(data)]
         problems += [(path, None, reason) for reason in file_problems(path, data, data)]
