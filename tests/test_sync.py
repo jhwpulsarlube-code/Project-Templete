@@ -51,6 +51,9 @@ class SyncTests(unittest.TestCase):
         self.git(self.root, 'init', '--bare', '-q', '-b', 'main', str(self.remote))
         self.git(self.consumer, 'remote', 'add', 'origin', str(self.remote))
         self.git(self.consumer, 'push', '-qu', 'origin', 'main')
+        self.source_remote = self.root / 'source-remote.git'
+        self.git(self.root, 'init', '--bare', '-q', '-b', 'main', str(self.source_remote))
+        self.git(self.source, 'remote', 'add', 'origin', str(self.source_remote))
 
     def git(self, repo, *args, check=True):
         return subprocess.run(['git', '-C', str(repo), *args], env=self.env,
@@ -60,7 +63,11 @@ class SyncTests(unittest.TestCase):
         self.git(repo, 'add', '.')
         self.git(repo, 'commit', '-qm', 'fixture')
 
-    def sync(self, *args):
+    def sync(self, *args, publish=True):
+        if publish:
+            # Deployment requires the source commit on the source default branch.
+            self.git(self.source, 'push', '-qf', 'origin', 'HEAD:refs/heads/main')
+            self.git(self.source, 'fetch', '-q', 'origin')
         return subprocess.run([sys.executable, '-I', '-S', '-B',
                                str(self.source / 'tools/sync.py'), str(self.consumer), *args],
                               env=self.env, capture_output=True, text=True, encoding='utf-8')

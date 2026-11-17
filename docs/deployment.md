@@ -2,7 +2,12 @@
 
 소비 프로젝트 배포본의 수정을 보존하려면 먼저 [역반영과 재배포](reverse.md)를 따른다.
 
-원본 저장소에서 정본 변경을 커밋한 뒤 실행한다. Python 표준 라이브러리와 Git만 필요하다.
+원본 저장소에서 정본 변경을 커밋하고 기본 브랜치에 병합·push한 뒤 실행한다.
+Python 표준 라이브러리와 Git만 필요하다.
+배포 기록의 정본 커밋은 이후 표류 비교와 역반영의 기준이므로, 원본 저장소 `origin`의
+기본 브랜치에서 도달할 수 없는 커밋으로는 배포하지 않는다. `--dry-run`은 `UNPUBLISHED`를
+표시하고 계획만 보여 주며, `--force`로 이 검사를 우회할 수 없다. 원격 기본 브랜치가
+로컬에 없으면 원본 저장소에서 `git fetch origin` 후 다시 실행한다.
 
 ```powershell
 python -B tools/sync.py C:\path\consumer --dry-run
@@ -39,6 +44,9 @@ python -B tools/sync.py C:\path\consumer
 `.workflow-deployment.json`을 단일 커밋으로 남긴다. 기록에는 `source_commit`의 전체
 정본 커밋 SHA와 `files`의 배포 경로별 SHA-256을 저장한다. 생성된
 `.claude/settings.json`도 기록하고 기록 파일 자체는 해시에 포함하지 않는다.
+기록 파일은 소비 프로젝트 루트에 있어 배포되는 `.gitattributes`가 닿지 않으므로,
+변경 여부는 체크아웃 바이트가 아니라 Git이 저장할 blob으로 판정한다. 줄바꿈 변환만
+다른 기록은 변경이 아니다.
 파일 헤더와 줄바꿈은 변경하지 않는다. 기존 `.claude/compose-settings.py`와 같은
 정본 생성기로 설정을 만들며, 프로젝트 입력을 자동으로 만들거나 수정하지 않는다.
 
