@@ -77,6 +77,38 @@ class CommonAssetsTest(unittest.TestCase):
             config.write_text(json.dumps({"issue_tracker": "other"}))
             self.assertEqual(run().returncode, 2)
 
+    def test_encoding_check_skips_only_declared_binary_files(self):
+        sys.path.insert(0, str(COMMON / 'test/tools'))
+        import check_encoding
+        env = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull)
+        for attributes, reported in [(b'fill.bin binary\n', False), (b'* -text\n', True), (b'', True)]:
+            with self.subTest(attributes=attributes), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                subprocess.run(['git', 'init', '-q', str(root)], check=True, env=env)
+                (root / '.gitattributes').write_bytes(attributes)
+                # 0xFF fill has no NUL, so Git's content detection calls it text.
+                (root / 'fill.bin').write_bytes(b'\xff' * 64)
+                subprocess.run(['git', '-C', str(root), 'add', '.'], check=True, env=env)
+                paths = {path for path, _, _ in check_encoding.all_problems(root)}
+                self.assertEqual('fill.bin' in paths, reported)
+
+    def test_rule_keys_are_not_counted_as_line_citations(self):
+        sys.path.insert(0, str(COMMON / 'test/tools'))
+        import check_ticket_links
+        found = check_ticket_links.CITATION.findall('sensor/sensor.c:10.7 key, sensor/sensor.c:10 and lubx.h:58.')
+        self.assertEqual(found, ['sensor/sensor.c:10', 'lubx.h:58'])
+
+    def test_stack_depth_rejects_a_build_without_main(self):
+        sys.path.insert(0, str(COMMON / 'test/tools'))
+        import stack_depth
+        with tempfile.TemporaryDirectory() as folder:
+            build = Path(folder)
+            (build / 'work.asm').write_text('_work:\n\t.STACK _work = 4\n\tret\n', encoding='utf-8')
+            with self.assertRaises(stack_depth.StackDepthError):
+                stack_depth.analyze(build)
+            (build / 'main.asm').write_text('_main:\n\t.STACK _main = 2\n\tcall !!_work\n', encoding='utf-8')
+            self.assertEqual(stack_depth.analyze(build)['main'][0], 6)
+
     def test_skill_links_resolve_in_deployment(self):
         for path in (COMMON / 'docs/agents').rglob('*.md'):
             self.assertNotIn('install.py', path.read_text(encoding='utf-8'), str(path))

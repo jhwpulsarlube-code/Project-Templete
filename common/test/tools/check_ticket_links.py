@@ -31,7 +31,8 @@ LINK = re.compile(r"\[[^\]\n]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 CODE_SPAN = re.compile(r"`[^`\n]*`")
 FENCE = re.compile(r"^\s*(```|~~~)")
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
-CITATION = re.compile(r"(?<![\w./-])(?:[\w-]+/)*[\w-]+\.[ch]:\d+")
+# 줄 번호에는 소수점이 없다: `sensor/sensor.c:10.7` 같은 `파일:규칙` 키는 세지 않는다
+CITATION = re.compile(r"(?<![\w./-])(?:[\w-]+/)*[\w-]+\.[ch]:\d+(?![\d.]*\.\d)")
 
 
 def links_in(text, only_lines=None):
