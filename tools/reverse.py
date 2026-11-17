@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 from sync import (PROJECT, RECORD, SETTINGS, Tree, clean_errors, compose, git,
-                  operation_errors, path_errors, previous_files, safe_path)
+                  operation_errors, path_errors, previous_files, record_matches, safe_path)
 
 
 COMMON_SETTINGS = '.claude/settings.common.json'
@@ -58,12 +58,18 @@ def main() -> int:
         if not hashes:
             raise ValueError('A valid deployment record is required')
         record = json.loads(current.content(RECORD) or b'{}')
+        try:
+            git(source, 'cat-file', '-e', record['source_commit'] + '^{commit}')
+        except ValueError as error:
+            raise ValueError(f"Deployment source commit {record['source_commit']} is not in the source "
+                             'repository; run git fetch origin there, or redeploy from a published '
+                             'commit with sync --force') from error
         baseline = Tree.read(source, record['source_commit'])
         latest = Tree.read(source, 'HEAD')
         errors = path_errors(consumer, current, set(hashes) | {RECORD, PROJECT})
         if errors:
             raise ValueError('\n'.join(errors))
-        if (consumer / RECORD).read_bytes() != current.content(RECORD):
+        if not record_matches(consumer, current.content(RECORD)):
             raise ValueError('Deployment record has uncommitted changes')
         changed: dict[str, bytes | None] = {}
         originals: dict[str, bytes] = {}

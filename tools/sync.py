@@ -19,12 +19,46 @@ SETTINGS = '.claude/settings.json'
 PROJECT = '.claude/settings.project.json'
 
 
-def git(repo: Path, *args: str) -> bytes:
-    result = subprocess.run(['git', '-C', str(repo), *args], capture_output=True,
+def git(repo: Path, *args: str, stdin: bytes | None = None) -> bytes:
+    result = subprocess.run(['git', '-C', str(repo), *args], capture_output=True, input=stdin,
                             env=dict(os.environ, GIT_OPTIONAL_LOCKS='0'))
     if result.returncode:
         raise ValueError(f"git {' '.join(args)}: {result.stderr.decode('utf-8', errors='replace').strip()}")
     return result.stdout
+
+
+def record_matches(consumer: Path, content: bytes | None) -> bool:
+    """Compare the deployment record the way Git stores it.
+
+    The record sits at the consumer root, outside the deployed .gitattributes
+    files, so a checkout may convert its line endings. Its own bytes are never
+    hashed; only the blob Git would store has to match.
+    """
+    if content is None or not (consumer / RECORD).is_file():
+        return content is None and not (consumer / RECORD).exists()
+    stored = git(consumer, 'hash-object', '--', RECORD)
+    return stored == git(consumer, 'hash-object', '--no-filters', '--stdin', stdin=content)
+
+
+def unpublished_source(source: Path, sha: str) -> str | None:
+    """Explain why SHA may vanish: it is not on the source default branch."""
+    try:
+        remote = git(source, 'ls-remote', '--symref', 'origin', 'HEAD').decode()
+    except ValueError as error:
+        return f'Cannot verify source commit {sha} against source origin: {error}'
+    branch = re.search(r'^ref: refs/heads/(.+)\tHEAD$', remote, re.M)
+    tip = re.search(r'^([0-9a-f]{40,64})\tHEAD$', remote, re.M)
+    if not branch or not tip:
+        return f'Cannot verify source commit {sha}: source origin has no default branch'
+    reachable = subprocess.run(['git', '-C', str(source), 'merge-base', '--is-ancestor', sha, tip[1]],
+                               capture_output=True)
+    if reachable.returncode == 0:
+        return None
+    if reachable.returncode != 1:
+        return (f'Latest source origin/{branch[1]} ({tip[1]}) is unavailable locally; '
+                'run git fetch origin in the source repository')
+    return (f'Source commit {sha} is not reachable from source origin/{branch[1]}; '
+            'merge and push it before deploying')
 
 
 def json_bytes(value: dict) -> bytes:
@@ -137,8 +171,10 @@ def deployment_files(source_tree: Tree, consumer_tree: Tree, sha: str) -> dict[s
 
 def verify(consumer: Path, files: dict[str, bytes], deletions: list[str]) -> None:
     """Normal byte comparison and regeneration, with no force bypass."""
-    drift = [path for path, content in files.items()
-             if not (consumer / path).is_file() or (consumer / path).read_bytes() != content]
+    drift = [path for path, content in files.items() if path != RECORD
+             and (not (consumer / path).is_file() or (consumer / path).read_bytes() != content)]
+    if not record_matches(consumer, files[RECORD]):
+        drift.append(RECORD)
     drift.extend(path for path in deletions
                  if (consumer / path).exists() or (consumer / path).is_symlink())
     generated = compose({path: (consumer / path).read_bytes() for path in (
@@ -223,6 +259,13 @@ def main() -> int:
         if errors:
             raise ValueError('\n'.join(errors))
         sha = git(source, 'rev-parse', 'HEAD').decode().strip()
+        # A record must keep pointing at a commit that survives rebases and
+        # branch deletion. Planning stays possible; --force does not bypass.
+        unpublished = unpublished_source(source, sha)
+        if unpublished and not args.dry_run:
+            raise ValueError(unpublished)
+        if unpublished:
+            print('UNPUBLISHED ' + unpublished)
         tree = Tree.read(source, sha)
         base_tree = Tree.read(consumer, base)
         files = deployment_files(tree, base_tree, sha)
@@ -249,13 +292,17 @@ def main() -> int:
         # Git can call a CRLF checkout clean while storing an LF blob. Compare
         # checkout bytes only if both file and applicable attributes match.
         # Otherwise require explicit force and materialize the canonical bytes.
+        # The record keeps its committed blob: the working tree is clean, and
+        # its checkout bytes are not part of any recorded hash.
         for path in old_files:
+            if path == RECORD:
+                continue
             attributes = [str(parent / '.gitattributes') for parent in PurePosixPath(path).parents]
             same_attributes = all(current_tree.entries.get(attr) == base_tree.entries.get(attr)
                                   for attr in attributes)
             if current_tree.entries.get(path) == base_tree.entries[path] and same_attributes:
                 old_files[path] = (consumer / path).read_bytes()
-            elif path != RECORD:
+            else:
                 uncertain.add(path)
         generated_before = None
         if SETTINGS in previous:

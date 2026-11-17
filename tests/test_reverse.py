@@ -104,6 +104,60 @@ class ReverseTests(unittest.TestCase):
         self.assertEqual(json.loads(generated.read_bytes())['env'],
                          {'SHARED': 'all', 'PROJECT': 'yes', 'LOCAL': 'one'})
 
+    def test_record_line_ending_conversion_is_not_a_change(self):
+        self.deploy()
+        record = self.consumer / test_sync.RECORD
+        # The record has no deployed attribute; autocrlf converts it on checkout.
+        self.git(self.consumer, 'config', 'core.autocrlf', 'true')
+        record.unlink()
+        self.git(self.consumer, 'checkout', '--', test_sync.RECORD)
+        self.assertIn(b'\r\n', record.read_bytes())
+        self.assertEqual(self.git(self.consumer, 'status', '--porcelain').stdout, b'')
+        result = self.reverse()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('No drift', result.stdout)
+        result = self.sync('--dry-run')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(test_sync.RECORD, result.stdout)
+        self.assertIn('No changes', result.stdout)
+        value = json.loads(record.read_bytes())
+        value['files']['docs/agents/domain.md'] = '0' * 64
+        record.write_bytes(json.dumps(value, indent=2, sort_keys=True).encode() + b'\n')
+        result = self.reverse()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('Deployment record has uncommitted changes', result.stderr)
+
+    def test_unpublished_source_commit_is_planned_but_never_deployed(self):
+        result = self.sync('--force', publish=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('Cannot verify source commit', result.stderr)
+        self.deploy()
+        (self.source / 'common/docs/agents/domain.md').write_bytes(b'Local only\n')
+        self.commit(self.source)
+        sha = self.git(self.source, 'rev-parse', 'HEAD').stdout.decode().strip()
+        refs = self.git(self.consumer, 'show-ref').stdout
+        result = self.sync('--dry-run', publish=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f'UNPUBLISHED Source commit {sha} is not reachable', result.stdout)
+        self.assertIn('UPDATE docs/agents/domain.md', result.stdout)
+        result = self.sync('--force', publish=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('is not reachable from source origin/main', result.stderr)
+        self.assertEqual(self.git(self.consumer, 'show-ref').stdout, refs)
+        self.assertEqual(self.sync().returncode, 0)
+
+    def test_missing_deployment_source_commit_is_explained(self):
+        self.deploy()
+        record = self.consumer / test_sync.RECORD
+        value = json.loads(record.read_bytes())
+        value['source_commit'] = '0' * len(value['source_commit'])
+        record.write_bytes(json.dumps(value, indent=2, sort_keys=True).encode() + b'\n')
+        subprocess.run(['git', '-C', str(self.consumer), 'commit', '-qam', 'lost source'],
+                       env=dict(self.env, WORKFLOW_SKIP_DRIFT_ONCE='1'), check=True, capture_output=True)
+        result = self.reverse()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('is not in the source repository', result.stderr)
+
     def test_project_hook_extension_survives_redeployment(self):
         self.deploy()
         path = '.githooks/pre-commit'
