@@ -60,6 +60,23 @@ class CommonAssetsTest(unittest.TestCase):
             (project / '.claude/temp-write.project.json').write_text(json.dumps({"allow_temp_top_level": ["codex"]}))
             self.assertEqual(run().returncode, 0)
 
+    def test_scratch_issue_tracker_policy_is_project_owned(self):
+        with tempfile.TemporaryDirectory() as folder:
+            project = Path(folder)
+            (project / '.claude').mkdir()
+            payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(project / ".scratch/feature/issues/01-ticket.md")}})
+            env = dict(os.environ, CLAUDE_PROJECT_DIR=str(project))
+            def run():
+                return subprocess.run([sys.executable, '-B', str(COMMON / '.claude/hooks/guard_scratch_layout.py')], input=payload.encode('utf-8'), capture_output=True, env=env)
+            config = project / '.claude/scratch-layout.project.json'
+            self.assertEqual(run().returncode, 0)
+            config.write_text(json.dumps({"issue_tracker": "local"}))
+            self.assertEqual(run().returncode, 0)
+            config.write_text(json.dumps({"issue_tracker": "github"}))
+            self.assertEqual(run().returncode, 2)
+            config.write_text(json.dumps({"issue_tracker": "other"}))
+            self.assertEqual(run().returncode, 2)
+
     def test_skill_links_resolve_in_deployment(self):
         for path in (COMMON / 'docs/agents').rglob('*.md'):
             self.assertNotIn('install.py', path.read_text(encoding='utf-8'), str(path))

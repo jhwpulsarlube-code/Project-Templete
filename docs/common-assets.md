@@ -22,7 +22,8 @@ nightly 대상 선택과 CI·release·코딩 표준은 프로젝트 소유로 �
 | `.githooks/pre-commit.d/` | 기존 프로젝트별 검사·완료 게이트를 sh 확장으로 연결한다. |
 | `docs/agents/host-test-project.md` | 제품 범위·안전 경로 표·빌드·variant·프로젝트 ADR. LK는 ADR 0005의 완료 게이트/범위 도출/stamp 보류와 대체 완료 조건을 보존한다. |
 | `test/host-test.project.json` | `product_pathspec` 배열과 선택적 `extra_includes` 배열. R의 기존 경로와 cryptography include를 옮긴다. |
-| `docs/agents/workflow-project.md` | tracker 종류·저장소와 프로젝트 외부 도구 인자 정책. |
+| `docs/agents/workflow-project.md` | tracker 종류·저장소, 종료 상태·Wayfinder 규칙과 프로젝트 외부 도구 인자 정책. |
+| `.claude/scratch-layout.project.json` | `{"issue_tracker":"github"}`이면 scratch-layout hook이 새 로컬 이슈 파일을 거부한다. 생략하거나 `local`이면 번호 붙은 티켓 규칙을 유지한다. |
 | 루트 `AGENTS.md`, `.gitignore` | 공통 안내 포인터와 임시 출력 ignore를 프로젝트가 소유한다. |
 
 공통 문서의 프로젝트 문서 경로는 의도된 확장 지점이다. 배포 전에 소비 프로젝트에서 준비한다.

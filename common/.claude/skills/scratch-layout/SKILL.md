@@ -5,9 +5,7 @@ description: Set up where skills put generated files (specs, tickets, evidence, 
 
 # Scratch layout
 
-스킬이 만드는 파일이 `.scratch/<feature>/` 안에서 한 곳에 모이게 한다. 강제하는 것은 hook 규칙 둘 — **`issues/` 에는 티켓만, 기능 루트에는 spec·map·ledger 만** —
-이고, 나머지 폴더(`measure/ review/ evidence/ classified/ scripts/ notes/`)는 프로젝트의
-`docs/agents/scratch-layout.md` 표로 안내한다. 스크립트는 모두 이 스킬의 `scripts/` 에 있다.
+The hook enforces the project issue-tracker policy and limits feature roots to spec, map and ledger files. Other artifact locations are documented in `docs/agents/scratch-layout.md`.
 
 ## 1. 배포 상태 확인
 
@@ -52,3 +50,5 @@ python .claude/skills/scratch-layout/scripts/scratch_layout.py migrate --repo <�
 - hook 은 `Write` 만 본다. Bash 리다이렉션으로 만드는 파일은 막지 못한다.
 - 티켓 판정은 파일명 `NN[a-z]?-slug.md` 뿐이다. 이름만 맞춘 비티켓은 hook 을 통과한다.
 - `references/layout-table.md` 의 폴더 이름은 기본값이다. 프로젝트가 AGENTS.md 표에서 빼거나 더해도 hook 은 영향받지 않는다.
+
+Project tracker policy is configured by `.claude/scratch-layout.project.json`: set `issue_tracker` to `github` to reject new local issue files; the default `local` retains the numbered-ticket rule.

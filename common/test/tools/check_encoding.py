@@ -11,6 +11,7 @@ BOM 없는 `.ps1` 은 PowerShell 5.1 이 ANSI(cp949)로 읽어 한글 주석 한
 `.md`·`.c`·`.h`·`.py`·`.js` 에 새로 붙은 BOM, 부모와 달라진 줄 끝이다. 옛 손상이 그 파일을 건드린 커밋을 막지 않게
 하려는 것이고, 옛 손상은 `--all` 로 점검한다. git 이 바이너리로 보는 파일은 건너뛰되, 텍스트 확장자인데
 바이너리가 됐다면(NUL) 그것을 알린다. 본문은 작업 트리가 아니라 index 에서 읽는다.
+이름이 바뀐 파일은 옛 경로의 HEAD 본문을 부모로 삼는다 — 이동만 한 파일의 BOM·옛 손상이 새 것으로 보이지 않는다.
 종료 코드: 0 손상 없음, 1 있음, 2 도구 오류(Git 실행 실패).
 """
 from pathlib import Path
@@ -93,9 +94,16 @@ def staged_files(root):
     return files
 
 
+def staged_renames(root):
+    """{새 경로: 옛 경로} — staged 이름 변경. 옮긴 파일의 부모는 옛 경로의 HEAD 본문이다."""
+    out = git(root, "diff", "--cached", "-M", "--diff-filter=R", "--name-status", "-z").stdout
+    fields = [field.decode("utf-8") for field in out.split(b"\0") if field]
+    return {fields[i + 2]: fields[i + 1] for i in range(0, len(fields) - 2, 3)}
+
+
 def staged_added_lines(root):
-    """{경로: {추가된 줄 번호}}."""
-    out = git(root, "diff", "--cached", "--no-renames", CHANGED, "-U0").stdout
+    """{경로: {추가된 줄 번호}}. 이름만 바뀐 파일은 추가한 줄이 없다."""
+    out = git(root, "diff", "--cached", "-M", CHANGED, "-U0").stdout
     added, current, header = {}, None, False
     for line in out.split(b"\n"):
         if line.startswith(b"diff --git "):
@@ -114,6 +122,7 @@ def staged_added_lines(root):
 def staged_problems(root):
     """[(경로, 줄 번호 또는 None, 사유)]."""
     lines = staged_added_lines(root)
+    renames = staged_renames(root)
     problems = []
     for path, binary in sorted(staged_files(root).items()):
         if binary:
@@ -121,7 +130,7 @@ def staged_problems(root):
                 problems.append((path, None, "git 이 바이너리로 본다(NUL 이 들어갔다)"))
             continue
         staged = git(root, "show", ":" + path).stdout
-        parent = git(root, "show", "HEAD:" + path, check=False)
+        parent = git(root, "show", "HEAD:" + renames.get(path, path), check=False)
         parent = parent.stdout if parent.returncode == 0 else None
         problems += [(path, number, reason) for number, reason in line_problems(staged, lines.get(path, set()))]
         problems += [(path, None, reason) for reason in file_problems(path, staged, parent)]
