@@ -120,6 +120,8 @@ def analyze(build):
         return result
 
     roots = [k for k in own if k[1] in ("_main", "main")]
+    if not roots:  # 일부 .asm 만 남은 빌드를 main 0 B 로 통과시키지 않는다
+        raise StackDepthError("{} 의 *.asm 에 _main 의 .STACK 이 없다 (빌드 산출물이 일부만 남았다)".format(build))
     isrs = sorted(((*depth(k), k[1], vectors[k]) for k in own if k in vectors), key=lambda r: -r[0])
     return {
         "main": max((depth(k) for k in roots), default=(0, [])),
