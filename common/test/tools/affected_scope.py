@@ -36,7 +36,7 @@ CALLER_DEPTH = 1
 HOST_SEAM_PREFIX = "test/"
 
 # 제품 전체를 훑을 때 러너 플래그에 더하는 인클루드. 정본은 check_pp_identity.py 다.
-EXTRA_INCLUDES = em.PROJECT_CONFIG.get("extra_includes", [])
+EXTRA_INCLUDES = tuple(em.PROJECT_CONFIG.get("extra_includes", []))
 
 TYPE_WORDS = {"int", "char", "short", "long", "float", "double", "void", "signed", "unsigned",
               "_Bool", "const", "volatile", "static", "extern", "struct", "union", "enum",

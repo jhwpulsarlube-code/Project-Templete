@@ -13,7 +13,7 @@ import re
 import sys
 
 SKILLS = ("tdd", "implement", "implement-spec")
-SECTION_KEYWORDS = ("ISR", "타깃", "생성 코드", "테스트 품질", "C 주석")
+SECTION_KEYWORDS = ("ISR", "타깃", "생성 코드", "테스트 품질", "C 주석", "파일 배치")
 SKILL_RE = re.compile(r"(?:^|:)(?:%s)$" % "|".join(SKILLS))
 SLASH_RE = re.compile(r"^\s*/(?:[\w-]+:)?(?:%s)(?:\s|$)" % "|".join(SKILLS))
 

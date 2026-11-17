@@ -14,7 +14,7 @@ FEATURE_DOCS = ("spec.md", "map.md", "ledger.md")
 DOC = "docs/agents/scratch-layout.md"
 
 
-def verdict(payload, root=".scratch"):
+def verdict(payload, root=".scratch", issue_tracker="local"):
     if payload.get("tool_name") != "Write":
         return None
     path = str(payload.get("tool_input", {}).get("file_path", "")).replace("\\", "/")
@@ -26,6 +26,8 @@ def verdict(payload, root=".scratch"):
              f"프로젝트의 \"산출물 위치\" 표({DOC}) 참조.")
     m = re.search(base + r"issues/(.+)$", path)
     if m:
+        if issue_tracker == "github":
+            return "Create new issues in GitHub Issues, not .scratch/: " + m.group(1) + "\n" + guide
         if TICKET_RE.match(m.group(1)):
             return None
         return f"`issues/` 에는 티켓(NN-<slug>.md)만 새로 만들 수 있다: {m.group(1)}\n" + guide
@@ -40,7 +42,20 @@ def main(argv):
         payload = json.load(sys.stdin)
     except ValueError:
         return 0
-    message = verdict(payload, argv[1] if len(argv) > 1 else ".scratch")
+    project = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+    config_path = os.path.join(project, ".claude", "scratch-layout.project.json")
+    try:
+        with open(config_path, encoding="utf-8") as config_file:
+            issue_tracker = json.load(config_file).get("issue_tracker", "local")
+    except FileNotFoundError:
+        issue_tracker = "local"
+    except (OSError, ValueError, AttributeError):
+        print("Invalid .claude/scratch-layout.project.json", file=sys.stderr)
+        return 2
+    if issue_tracker not in ("local", "github"):
+        print("Invalid scratch-layout issue_tracker", file=sys.stderr)
+        return 2
+    message = verdict(payload, argv[1] if len(argv) > 1 else ".scratch", issue_tracker)
     if message:
         print(message, file=sys.stderr)
         return 2

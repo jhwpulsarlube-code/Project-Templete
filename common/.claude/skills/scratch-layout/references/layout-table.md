@@ -5,7 +5,7 @@
 | 산출물 | 위치 |
 |---|---|
 | spec·map·원장 | `{root}/<feature>/spec.md`, `map.md`, `ledger.md` — 기능 루트에는 이 문서만 (`.claude/hooks/guard_scratch_layout.py` 가 새 파일을 막는다) |
-| 티켓 | `{root}/<feature>/issues/NN-<slug>.md` — **티켓만, 하위 폴더 없음** (`.claude/hooks/guard_scratch_layout.py` 가 새 파일을 막는다) |
+| Issues | Follow the project tracker policy in `docs/agents/workflow-project.md`; local trackers use numbered files under `issues/`. |
 | 측정값·기준선 | `{root}/<feature>/measure/` |
 | 리뷰·변이 검토 JSON | `{root}/<feature>/review/` |
 | 관찰표·근거·생존자 문서 | `{root}/<feature>/evidence/` |
