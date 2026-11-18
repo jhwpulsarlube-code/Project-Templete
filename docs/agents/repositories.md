@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | `pulsarlube-r` | `https://github.com/klt-rnd/Pulsarlube-R.git` | `docs/agents/workflow-project.md` |
 
-규칙 문서 경로는 작업 트리 루트 기준입니다. 루트 `AGENTS.md`는 포인터와 관계없이 항상 읽습니다.
+규칙 문서 경로는 작업 트리 루트 기준입니다.
 
 ## 사내 목록
 
