@@ -14,6 +14,10 @@ When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the 
 
 Edit the right-hand column to match whatever vocabulary you actually use.
 
+## Changing labels
+
+Add the new label first, then remove the old one in a separate `gh issue edit` call. When one call adds a label the tracker lacks and removes another, `gh` reports the failed add but still applies the removal, leaving the issue with no triage label. Check with `gh label list` first; if a label in the right-hand column is missing from the tracker, report it to the user.
+
 ## Project tracker
 
 The tracker, terminal states, and Wayfinder conventions are project-owned. Follow

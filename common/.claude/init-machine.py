@@ -351,4 +351,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.modules["machine_common"] = sys.modules[__name__]
+    for _stream in (sys.stdout, sys.stderr):
+        _stream.reconfigure(encoding="utf-8")   # 한국어 메시지가 cp949 아닌 콘솔에서 도구를 죽인다
     sys.exit(main())
