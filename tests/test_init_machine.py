@@ -40,7 +40,7 @@ runpy.run_path('.claude/init-machine.py', run_name='__main__')
 
     def run_machine(self, *args):
         return subprocess.run([sys.executable, '-I', '-S', str(self.harness), *args],
-                              cwd=self.root, capture_output=True, text=True,
+                              cwd=self.root, capture_output=True, text=True, encoding='utf-8',
                               env={k: v for k, v in os.environ.items() if k != "CC"})
 
     def config(self):
