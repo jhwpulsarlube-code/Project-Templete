@@ -5,7 +5,7 @@
 ## 작업 방법
 
 - 이슈 생성: `gh issue create --title "..." --body "..."`. 여러 줄 본문은 파일을 작성하고 `--body-file`을 사용합니다.
-- 이슈 조회: `gh issue view <번호> --comments`. 라벨도 확인하고 필요하면 `jq`로 댓글을 필터링합니다.
+- 이슈 조회: `gh issue view <번호> --json title,body,labels,comments`. 필요하면 `--jq`로 댓글을 필터링합니다. 비대화형 셸에서 `--comments`만 주면 본문 없이 댓글만 나옵니다.
 - 이슈 목록: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`. 필요에 따라 `--label`과 `--state`로 필터링합니다.
 - 댓글: `gh issue comment <번호> --body "..."`
 - 라벨 추가 또는 제거: `gh issue edit <번호> --add-label "..."` 또는 `--remove-label "..."`
@@ -17,7 +17,7 @@
 
 `yes`일 때는 이슈와 같은 라벨과 상태를 적용합니다. `gh pr view <번호> --comments`와 `gh pr diff <번호>`로 읽고, `gh pr list --state open --json number,title,body,labels,author,authorAssociation,comments`에서 `authorAssociation`이 `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `NONE`인 PR만 남깁니다. 댓글, 라벨, 종료에는 `gh pr comment`, `gh pr edit`, `gh pr close`를 사용합니다. 이슈와 PR은 번호를 공유하므로 번호만 주어지면 `gh pr view`를 먼저 시도하고 실패하면 `gh issue view`를 사용합니다.
 
-스킬이 이슈 추적기에 게시하라고 하면 GitHub 이슈를 생성하고, 관련 티켓을 가져오라고 하면 `gh issue view <번호> --comments`를 실행합니다.
+스킬이 이슈 추적기에 게시하라고 하면 GitHub 이슈를 생성하고, 관련 티켓을 가져오라고 하면 위의 이슈 조회 명령을 실행합니다.
 
 ## Wayfinder 작업
 
