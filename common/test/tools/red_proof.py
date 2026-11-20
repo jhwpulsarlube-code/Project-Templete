@@ -5,6 +5,11 @@
     python -B test/tools/red_proof.py --commit <rev>        # 커밋 <rev>(부모 <rev>^)
     python -B test/tools/red_proof.py --preprocess [--commit <rev>]   # 전처리 동일성
 
+러너는 두 방식을 받는다. TEST_CASES 러너(run_test·assertion_calls, 실패 줄 `FAIL: <설명>`)는 단정을
+(실행 파일, 설명)으로 식별한다. VARIANTS 러너(CC·CFLAGS·main, 실패 줄 `FAIL <파일>:<줄>  <메시지>`)는 실패 줄을
+대상 소스의 EXPECT* 호출 범위로 되짚어 (테스트 TU, 파일: 호출 식)으로 식별한다. --preprocess 는 TEST_CASES
+러너만 지원한다.
+
 red 증명은 부모의 제품 경로와 대상의 호스트 테스트 경로를 격리 임시 사본에 합쳐 러너의 TU 목록과
 빌드 함수로 돌린다. 부모 사본은 git archive로 풀며 작업 트리·stash·worktree를 쓰지 않는다. 판정
 집합은 대상 diff에서 새로 생기거나 조건·설명이 바뀐 단정의 (실행 파일, 설명)이며, 부모에서 실패한
@@ -19,7 +24,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 import argparse
+import bisect
+import contextlib
 import difflib
+import glob
 import io
 import os
 import posixpath
@@ -41,8 +49,8 @@ import verification_snapshot as vs  # noqa: E402
 TEMP_PREFIX = "plr-red-proof-"
 # 호스트 테스트 경로: test/ 에서 도구·기준선·문서를 뺀 실행 코드(test/AGENTS.md)
 NON_HOST_TEST_PREFIXES = ("test/tools/", "test/mutation_baselines/")
-ARCHIVE_PATHS = [path for path in em.PRODUCT_PATHSPEC if not path.startswith(":")] + ["test"]
 FAIL_LINE = re.compile(r"^FAIL: (.*?)\r?$")
+FAIL_SITE = re.compile(r"^FAIL (.+?):(\d+)  (.*?)\r?$")
 SHOWN = 5          # 요약 한 줄에 풀어 쓰는 항목 수
 DIFF_LINES = 120   # 거부 시 보여 주는 테스트 diff 줄 수
 
@@ -90,10 +98,18 @@ class GitTree:
 
     def materialize(self, destination):
         """제품 경로와 test/ 를 destination 에 푼다. 작업 트리는 건드리지 않는다."""
-        names = [name for name in em.git("ls-tree", "-z", "--name-only", self.sha, "--",
-                                         *ARCHIVE_PATHS, cwd=self.root).split("\0") if name]
-        extract_archive(git_bytes("archive", "--format=tar", self.sha, "--", *names,
-                                  cwd=self.root), destination)
+        # 제품 경로는 pathspec 이다(`*.h` 는 저장소 루트 파일까지, exclude 는 test/ 를 뺀다). ls-tree 는 글롭을
+        # 해석하지 않으므로 git archive 에 그대로 넘긴다. test/ 는 exclude 와 겹치지 않게 따로 푼다.
+        excludes = [spec for spec in em.PRODUCT_PATHSPEC if spec.startswith(":")]
+        includes = [spec for spec in em.PRODUCT_PATHSPEC if not spec.startswith(":")]
+        for paths in [[spec, *excludes] for spec in includes] + [["test"]]:
+            try:
+                data = git_bytes("archive", "--format=tar", self.sha, "--", *paths, cwd=self.root)
+            except subprocess.CalledProcessError as error:
+                if b"did not match" in (error.stderr or b""):   # 이 커밋에 없는 제품 경로는 건너뛴다
+                    continue
+                raise
+            extract_archive(data, destination)
 
 
 class WorkTree:
@@ -177,33 +193,211 @@ def find_compiler(runner):
         raise em.ToolError(str(error)) from error
 
 
-def run_all(runner, root, progress=None):
-    """러너의 TU 목록을 root 에서 빌드·실행해 실행 파일별 결과를 돌려준다."""
-    gcc = find_compiler(runner)
-    inspection_error = getattr(runner, "AssertionInspectionError", ())
-    results = {}
-    for executable, sources, *rest in runner.TEST_CASES:
-        if progress:
-            progress("{} 빌드·실행".format(executable))
-        status = None
-        code = None
-        with captured_output() as box:
-            try:
-                code = runner.run_test(gcc, executable, sources, rest[0] if rest else None,
-                                       root=Path(root))
-            except subprocess.CalledProcessError:
+def relative_to(root, name):
+    """root 기준 posix 상대 경로. root 밖이면 name 을 posix 로만 바꾼다."""
+    try:
+        return Path(os.path.realpath(name)).relative_to(os.path.realpath(root)).as_posix()
+    except ValueError:
+        return Path(name).as_posix()
+
+
+EXPECT_NAME = re.compile(r"EXPECT\w*")
+TOKEN = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|[A-Za-z_0-9]\w*|[^\s]',
+                   re.DOTALL)
+
+
+def mask_directives(source):
+    """전처리 지시문(이어진 줄 포함)을 비운다. 줄 수는 그대로 둔다. 매크로 정의는 단정 호출이 아니다."""
+    lines, continued = [], False
+    for line in source.split("\n"):
+        directive = continued or line.lstrip().startswith("#")
+        continued = directive and line.rstrip("\r").endswith("\\")
+        lines.append("" if directive else line)
+    return "\n".join(lines)
+
+
+def expect_calls(source):
+    """EXPECT* 호출의 (정규화한 호출 식, 시작 줄, 끝 줄)을 소스 순서로. 중첩 호출은 바깥 것만 센다."""
+    masked = mask_directives(source)
+    newlines = [i for i, char in enumerate(masked) if char == "\n"]
+    tokens = [(found.group(), bisect.bisect_left(newlines, found.start()) + 1)
+              for found in TOKEN.finditer(masked) if not found.group().startswith(("//", "/*"))]
+    calls, index = [], 0
+    while index < len(tokens) - 1:
+        if not (EXPECT_NAME.fullmatch(tokens[index][0]) and tokens[index + 1][0] == "("):
+            index += 1
+            continue
+        depth = 0
+        for end in range(index + 1, len(tokens)):
+            depth += (tokens[end][0] == "(") - (tokens[end][0] == ")")
+            if depth == 0:
+                break
+        else:
+            raise em.ToolError("단정 호출의 괄호가 닫히지 않는다: {}줄".format(tokens[index][1]))
+        calls.append((" ".join(text for text, _ in tokens[index:end + 1]), tokens[index][1], tokens[end][1]))
+        index = end + 1
+    return calls
+
+
+def describe_calls(path, calls):
+    """호출마다 사람이 읽는 설명을 붙인다. 같은 호출 식이 한 파일에 여럿이면 몇 번째인지 덧붙인다."""
+    totals = Counter(call[0] for call in calls)
+    seen = Counter()
+    descriptions = []
+    for call in calls:
+        seen[call[0]] += 1
+        suffix = " (동일 호출 {}/{}번째)".format(seen[call[0]], totals[call[0]]) if totals[call[0]] > 1 else ""
+        descriptions.append("{}: {}{}".format(path, call[0], suffix))
+    return descriptions
+
+
+class CaseSuite:
+    """TEST_CASES 러너. 단정은 (실행 파일, 설명)으로 식별한다."""
+
+    def __init__(self, runner):
+        self.runner = runner
+
+    def run_all(self, root, progress=None):
+        """러너의 TU 목록을 root 에서 빌드·실행해 실행 파일별 결과를 돌려준다."""
+        runner = self.runner
+        gcc = find_compiler(runner)
+        inspection_error = getattr(runner, "AssertionInspectionError", ())
+        results = {}
+        for executable, sources, *rest in runner.TEST_CASES:
+            if progress:
+                progress("{} 빌드·실행".format(executable))
+            status = None
+            code = None
+            with captured_output() as box:
+                try:
+                    code = runner.run_test(gcc, executable, sources, rest[0] if rest else None,
+                                           root=Path(root))
+                except subprocess.CalledProcessError:
+                    status = "build_fail"
+                except inspection_error:
+                    status = "abnormal"
+            output = box[0]
+            failed = [found.group(1) for found in map(FAIL_LINE.match, output.splitlines()) if found]
+            if status is None:
+                if code == 0:
+                    status = "pass"
+                else:
+                    status = "assert_fail" if code == 1 and failed else "abnormal"
+            results[executable] = ExeResult(status, failed if status == "assert_fail" else [], output)
+        return results
+
+    def executables(self, root):
+        """소스 경로 → 그 소스를 빌드하는 실행 파일 이름들."""
+        executables = {}
+        for name, sources, *_ in self.runner.TEST_CASES:
+            for source in sources:
+                executables.setdefault(posixpath.normpath(source), []).append(name)
+        return executables
+
+    def new_calls(self, path, before, after):
+        """대상에서 새로 생기거나 조건·설명이 바뀐 단정의 설명. before 가 None 이면 새 파일이다."""
+        if not hasattr(self.runner, "assertion_calls"):
+            raise em.ToolError("러너가 assertion_calls 를 공개하지 않는다")
+        old = Counter(self.runner.assertion_calls(before) if before is not None else [])
+        found = []
+        for call in self.runner.assertion_calls(after):
+            if old[call] > 0:
+                old[call] -= 1
+            else:
+                found.append(call[1])
+        return found
+
+
+class VariantSuite:
+    """VARIANTS 러너(CC·CFLAGS·main). 단정은 (테스트 TU, 파일: 호출 식)으로 식별한다.
+
+    실패 줄의 줄 번호는 사본에 설치된 대상 테스트 소스의 줄이므로, 그 줄을 덮는 EXPECT* 호출로 되짚는다."""
+
+    def __init__(self, runner):
+        self.runner = runner
+
+    def tests(self, root):
+        return sorted(glob.glob(str(Path(root) / "test" / "test_*.c")))
+
+    def run_all(self, root, progress=None):
+        root = Path(root)
+        results = {}
+        for test in self.tests(root):
+            stem = Path(test).stem
+            if progress:
+                progress("{} 빌드·실행".format(stem))
+            sink = io.StringIO()
+            with contextlib.redirect_stdout(sink):
+                code = self.runner.main([stem])
+            output = sink.getvalue()
+            sites = [(found.group(1), int(found.group(2)))
+                     for found in map(FAIL_SITE.match, output.splitlines()) if found]
+            if "BUILD FAIL" in output:
                 status = "build_fail"
-            except inspection_error:
-                status = "abnormal"
-        output = box[0]
-        failed = [found.group(1) for found in map(FAIL_LINE.match, output.splitlines()) if found]
-        if status is None:
-            if code == 0:
+            elif code == 0:
                 status = "pass"
             else:
-                status = "assert_fail" if code == 1 and failed else "abnormal"
-        results[executable] = ExeResult(status, failed if status == "assert_fail" else [], output)
-    return results
+                status = "assert_fail" if code == 1 and sites else "abnormal"
+            failed = self.failed_calls(root, sites) if status == "assert_fail" else []
+            results[stem] = ExeResult(status, failed, output)
+        return results
+
+    def failed_calls(self, root, sites):
+        cache, failed = {}, []
+        for name, line in sites:
+            path = relative_to(root, name)
+            if path not in cache:
+                try:
+                    calls = expect_calls(decode((Path(root) / path).read_bytes()))
+                except (OSError, em.ToolError):
+                    calls = []
+                cache[path] = (calls, describe_calls(path, calls))
+            calls, descriptions = cache[path]
+            hit = [text for call, text in zip(calls, descriptions) if call[1] <= line <= call[2]]
+            failed.append(hit[0] if hit else "{}:{} (단정 호출을 찾지 못함)".format(path, line))
+        return failed
+
+    def executables(self, root):
+        """소스 경로 → 그 소스를 (직접·#include 로) 쓰는 테스트 TU 이름들. 러너와 같은 옵션의 gcc -MM 으로 잰다."""
+        root = Path(root)
+        runner = self.runner
+        executables = {}
+        for test in self.tests(root):
+            for variant in runner.VARIANTS:
+                deps = subprocess.run([runner.CC, *runner.CFLAGS, *variant["extra"], test, "-MM"],
+                                      cwd=root, capture_output=True, text=True)
+                if deps.returncode:
+                    raise em.ToolError("의존성 측정 실패: {}\n{}".format(test, deps.stderr[-2000:]))
+                words = re.split(r"(?<!\\)\s+", deps.stdout.replace("\\\r\n", " ").replace("\\\n", " "))
+                for word in words[1:]:
+                    if word:
+                        path = relative_to(root, word.replace("\\ ", " "))
+                        names = executables.setdefault(path, [])
+                        if Path(test).stem not in names:
+                            names.append(Path(test).stem)
+        return executables
+
+    def new_calls(self, path, before, after):
+        new = expect_calls(after)
+        descriptions = describe_calls(path, new)
+        if before is None:
+            return descriptions
+        old = [call[0] for call in expect_calls(before)]
+        matcher = difflib.SequenceMatcher(None, old, [call[0] for call in new], autojunk=False)
+        return [descriptions[index] for tag, _i1, _i2, j1, j2 in matcher.get_opcodes()
+                if tag in ("insert", "replace") for index in range(j1, j2)]
+
+
+def suite_for(runner):
+    if hasattr(runner, "TEST_CASES"):
+        return CaseSuite(runner)
+    if hasattr(runner, "VARIANTS") and hasattr(runner, "CFLAGS") and hasattr(runner, "CC"):
+        return VariantSuite(runner)
+    raise em.ToolError("지원하지 않는 러너: TEST_CASES 도, VARIANTS·CFLAGS·CC 도 공개하지 않는다")
+
+
+def run_all(runner, root, progress=None):
+    return suite_for(runner).run_all(root, progress)
 
 
 def labels(results, status):
@@ -214,28 +408,22 @@ def failed_set(results):
     return {(name, description) for name, result in results.items() for description in result.failed}
 
 
-def judged_assertions(runner, parent, target):
+def judged_assertions(suite, root, parent, target):
     """대상에서 새로 생기거나 조건·설명이 바뀐 단정의 (실행 파일, 설명) 집합과, 실행 파일에 연결되지
-    않아 판정할 수 없는 (경로, 설명) 목록을 돌려준다. 설명이 리터럴이 아닌 단정은 러너와 같이 대상 밖이다."""
-    if not hasattr(runner, "assertion_calls"):
-        raise em.ToolError("러너가 assertion_calls 를 공개하지 않는다")
-    executables = {}
-    for name, sources, *_ in runner.TEST_CASES:
-        for source in sources:
-            executables.setdefault(posixpath.normpath(source), []).append(name)
+    않아 판정할 수 없는 (경로, 설명) 목록을 돌려준다. 설명이 리터럴이 아닌 단정은 러너와 같이 대상 밖이다.
+    root 는 target 을 실제로 빌드하는 경로다."""
+    executables = suite.executables(root)
     existing = set(parent.host_tests())
     judged, unmapped = set(), []
     for path in target.host_tests():
         if not path.endswith((".c", ".h")):
             continue
-        before = Counter(runner.assertion_calls(decode(parent.read(path))) if path in existing else [])
-        for call in runner.assertion_calls(decode(target.read(path))):
-            if before[call] > 0:
-                before[call] -= 1
-            elif path in executables:
-                judged.update((name, call[1]) for name in executables[path])
+        before = decode(parent.read(path)) if path in existing else None
+        for description in suite.new_calls(path, before, decode(target.read(path))):
+            if path in executables:
+                judged.update((name, description) for name in executables[path])
             else:
-                unmapped.append((path, call[1]))
+                unmapped.append((path, description))
     return judged, unmapped
 
 
@@ -391,12 +579,13 @@ def run_red_proof(root=em.ROOT, commit=None, progress=None):
             target.materialize(temp / "target")
             target_root = temp / "target"
         switches = check_switches([("부모", temp / "parent"), ("대상", target_root)], progress)
-        runner = vs.load_runner(target_root)
-        judged, unmapped = judged_assertions(runner, parent, target)
+        target_suite = suite_for(vs.load_runner(target_root))
+        parent_suite = suite_for(vs.load_runner(temp / "parent"))
+        judged, unmapped = judged_assertions(target_suite, target_root, parent, target)
         progress("부모 제품 + 대상 테스트")
-        parent_run = run_all(runner, temp / "parent", progress)
+        parent_run = parent_suite.run_all(temp / "parent", progress)
         progress("대상 제품 + 대상 테스트")
-        target_run = run_all(runner, target_root, progress)
+        target_run = target_suite.run_all(target_root, progress)
     return RedReport(command_for(commit), target.label, parent.sha, judged, unmapped,
                      parent_run, target_run, switches)
 
@@ -531,6 +720,8 @@ def run_identity(root=em.ROOT, commit=None, progress=None):
             target_root = temp / "target"
         switches = check_switches([("부모", temp / "parent"), ("대상", target_root)], progress)
         target_runner = vs.load_runner(target_root)
+        if not hasattr(target_runner, "TEST_CASES"):
+            raise em.ToolError("--preprocess 는 TEST_CASES 러너만 지원한다")
         if not hasattr(target_runner, "COMPILER_FLAGS"):
             raise em.ToolError("러너가 COMPILER_FLAGS 를 공개하지 않는다")
         flags = list(target_runner.COMPILER_FLAGS)
