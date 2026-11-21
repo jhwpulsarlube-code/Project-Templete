@@ -73,5 +73,11 @@ Git 무시 규칙에 해당하더라도 실패하며, `--force`로 이 검증을
 실행 예와 복구 방법은 [배포되는 Git hook 안내](../common/.githooks/README.md)를 따른다.
 `python -B .githooks/check_drift.py`는 우회 환경 변수와 무관하게 정상 검사를 실행한다.
 
+## Codex 배포 후 확인
+
+소비 프로젝트의 작업 트리에서 Codex를 시작하고 공통 스킬 세 개의 출처가 프로젝트의 `.agents/skills/`인지 확인한다. 프로젝트 및 필수 훅의 신뢰 상태를 확인한다. CLI에서는 `/hooks`로 출처와 활성화 상태를 확인할 수 있다. 훅 정의가 바뀌면 다시 검토한다.
+
+처음 배포할 때는 브랜치와 파일 쓰기 가드가 실제 도구 호출을 실행 전에 막는지 확인한다. 프로젝트 고유 차단은 해당 프로젝트의 규칙 문서와 실제 사용 도구를 기준으로 확인한다. [홈 레포 실행 조건](home-repo-spec.md#codex로-제품-작업을-시작할-때)과 [시범 완료 조건](workflow-source-spec.md#8-전환-순서와-검증)을 따른다.
+
 검증은 `python -B -m unittest discover -s tests -p test_sync.py`로 실행한다.
 임시 원본·소비 저장소와 로컬 bare 원격을 사용하며 실제 소비 프로젝트를 변경하지 않는다.

@@ -14,6 +14,83 @@ COMMON = Path(__file__).resolve().parents[1] / "common"
 
 
 class CommonAssetsTest(unittest.TestCase):
+    def test_codex_skill_entry_points_use_the_shared_skills(self):
+        for guide in (COMMON / ".claude/skills").glob("*/SKILL.md"):
+            entry = COMMON / ".agents/skills" / guide.parent.name / "SKILL.md"
+            text = entry.read_text(encoding="utf-8")
+            self.assertIn(f"`{guide.relative_to(COMMON).as_posix()}`", text)
+            self.assertEqual(text.split("---", 2)[1],
+                             guide.read_text(encoding="utf-8").split("---", 2)[1])
+
+    def test_codex_session_start_injects_the_same_project_standards_as_claude(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            shutil.copytree(COMMON / ".claude/hooks", root / ".claude/hooks")
+            nested = root / "test"
+            nested.mkdir()
+            (root / "CODING_STANDARDS.md").write_text(
+                "# 표준\n\n## ISR\n구현 기준\n\n## 커밋\n리뷰 기준\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+            hooks = json.loads((COMMON / ".codex/hooks.json").read_text(encoding="utf-8"))
+            command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+            shell = ["powershell", "-NoProfile", "-Command"] if os.name == "nt" else ["sh", "-c"]
+            codex = subprocess.run(
+                [*shell, command], cwd=nested,
+                input=json.dumps({"hook_event_name": "SessionStart", "cwd": str(nested)}),
+                text=True, encoding="utf-8", capture_output=True, check=True,
+            )
+            claude = subprocess.run(
+                [sys.executable, "-B", str(root / ".claude/hooks/inject_coding_standards.py")],
+                cwd=nested, env={**os.environ, "CLAUDE_PROJECT_DIR": str(root)},
+                input=json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "/tdd"}),
+                text=True, encoding="utf-8", capture_output=True, check=True,
+            )
+            output = json.loads(codex.stdout)["hookSpecificOutput"]
+            self.assertEqual(output["hookEventName"], "SessionStart")
+            self.assertIn("구현 기준", output["additionalContext"])
+            self.assertNotIn("## 커밋", output["additionalContext"])
+            self.assertEqual(output["additionalContext"],
+                             json.loads(claude.stdout)["hookSpecificOutput"]["additionalContext"])
+
+    def test_codex_hook_adapts_shell_and_patch_calls(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            shutil.copytree(COMMON / ".claude/hooks", root / ".claude/hooks")
+            adapter = root / ".codex/workflow-hook.py"
+            adapter.parent.mkdir()
+            shutil.copyfile(COMMON / ".codex/workflow-hook.py", adapter)
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+            nested = root / "test"
+            nested.mkdir()
+            system_temp = root / "system-temp"
+            system_temp.mkdir()
+            env = {**os.environ, "TMPDIR": str(system_temp),
+                   "TEMP": str(system_temp), "TMP": str(system_temp)}
+            for tool, command, denied in [
+                ("Bash", "git commit -m message", True),
+                ("Bash", "git status --short", False),
+                ("apply_patch", "*** Add File: ../.scratch/demo/관찰.md", True),
+                ("apply_patch", "*** Add File: ../.scratch/demo/spec.md", False),
+                ("apply_patch", "*** Add File: ../system-temp/notes.md", True),
+                ("apply_patch", "*** Add File: ../.scratch/demo/spec.md\n"
+                                "*** Move to: ../.scratch/demo/관찰.md", True),
+            ]:
+                with self.subTest(tool=tool, command=command):
+                    result = subprocess.run(
+                        [sys.executable, "-B", str(adapter)], cwd=nested,
+                        input=json.dumps({"hook_event_name": "PreToolUse",
+                                          "cwd": str(nested), "tool_name": tool,
+                                          "tool_input": {"command": command}}),
+                        text=True, encoding="utf-8", capture_output=True, check=True, env=env,
+                    )
+                    if denied:
+                        output = json.loads(result.stdout)["hookSpecificOutput"]
+                        self.assertEqual(output["permissionDecision"], "deny")
+                    else:
+                        self.assertEqual(result.stdout, "")
+
     def test_project_policy_changes_invalidate_measurement_evidence(self):
         sys.path.insert(0, str(COMMON / 'test/tools'))
         import exhaustive_mutation as em

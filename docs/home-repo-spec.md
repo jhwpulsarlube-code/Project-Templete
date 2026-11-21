@@ -45,6 +45,12 @@ Project-Templete는 팀의 기본 작업 시작점이자 워크플로우 자산�
 
 문제가 생기면 해당 작업과 그 결과에 의존하는 작업을 보류하고 독립적인 작업은 계속한다. [팀 공용 저장소 포인터와 머신별 경로 계약](https://github.com/jhwpulsarlube-code/Project-Templete/issues/50#issuecomment-6970952604) · [홈 레포에서 단일·다중 저장소 작업을 처리하는 절차](https://github.com/jhwpulsarlube-code/Project-Templete/issues/51#issuecomment-6971135500) · [저장소 포인터와 규칙 문서의 유지보수 및 검증 기준](https://github.com/jhwpulsarlube-code/Project-Templete/issues/53#issuecomment-6971366566) · [Home Repo에서 연결 저장소의 규칙을 읽는 에이전트 동작 조사](https://github.com/jhwpulsarlube-code/Project-Templete/issues/48#issuecomment-6964535680)
 
+### Codex로 제품 작업을 시작할 때
+
+1. 홈 레포에서 선택한 작업 트리와 규칙 문서 경로, 사용자 요청을 소비 프로젝트의 Codex 세션에 전달한다. 소비 프로젝트에서 직접 시작하면 현재 작업 트리에서 같은 확인 절차를 밟는다.
+2. Codex 세션의 시작 위치가 선택한 작업 트리 안인지 확인한다. 프로젝트 규칙을 읽고 배포된 스킬을 확인한다. 프로젝트와 필수 훅의 신뢰 및 활성화 상태를 확인한다. 훅 정의가 바뀌면 다시 검토한다.
+3. 필수 차단을 확인할 수 없는 작업은 보류하고, 결과 보고에 영향 범위와 재개 조건을 남긴다. 세션 시작 위치와 별개로 작업 트리 쓰기 권한을 확인한다.
+
 ## 4. 기존 배포·역반영 절차와 연계
 
 공통 변경은 `common/`의 정본을 수정·검증하고 원본 저장소 기본 브랜치에 병합·push한 뒤, 합의된 소비 프로젝트에 `tools/sync.py`로 배포한다. 도구가 소비 프로젝트에서 배포본·생성 설정·배포 기록을 검증해 한 커밋에 담으면 저장소별 검사 결과를 확인한다. 원격 push와 배포 PR 생성은 사람이 수행한다. 프로젝트별 조정은 해당 프로젝트의 확장 지점에서 처리한다. [기존 운영 설계](workflow-source-spec.md) · [수동 배포 절차](deployment.md) · [ADR 0001](adr/0001-push-committed-distributions.md) · [ADR 0002](adr/0002-entrypoint-extension-ownership.md)

@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "SessionStart": [{
+      "hooks": [{
+        "type": "command",
+        "command": "python -B \"$(git rev-parse --show-toplevel)/.claude/hooks/inject_coding_standards.py\""
+      }]
+    }],
+    "PreToolUse": [{
+      "matcher": "^(Bash|apply_patch)$",
+      "hooks": [{
+        "type": "command",
+        "command": "python -B \"$(git rev-parse --show-toplevel)/.codex/workflow-hook.py\""
+      }]
+    }]
+  }
+}

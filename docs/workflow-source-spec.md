@@ -10,7 +10,7 @@
 
 | 구분 | 포함 범위 |
 | --- | --- |
-| 공통 계층 | Claude hook과 연결 설정, 공통 스킬, `docs/agents`의 공통 문서, git hook, `issue-status.ps1`, `init-machine.py`, 공통 워크플로우 안내와 재사용 도구 |
+| 공통 계층 | Claude·Codex 훅과 연결 설정, 공통 스킬과 런타임별 진입점, `docs/agents`의 공통 문서, Git 훅, `issue-status.ps1`, `init-machine.py`, 공통 워크플로우 안내와 재사용 도구 |
 | 프로젝트 계층 | 소비 프로젝트가 소유하는 확장 지점 파일, 프로젝트 고유 문서·검사·테스트 로직, `AGENTS.md` |
 | 범위 밖 | 빌드·배포 도구(`release.py`), CI 정의(`host-gates.yml`), `CODING_STANDARDS.md`, 외부 범용 스킬 |
 
@@ -69,6 +69,13 @@ docs/
 - `.claude/settings.json`은 두 입력을 병합해 생성한다. 배열(`allow`, `deny`, hook 목록)은 중복을 제거한 합집합으로 합치며, 스칼라 값 충돌은 오류로 끝낸다.
 - sync와 소비 프로젝트는 같은 스크립트를 사용한다. 소비 프로젝트에서 `python .claude/compose-settings.py`만으로 재생성할 수 있어야 한다.
 - 생성 결과는 같은 입력에서 같은 바이트를 내야 한다. 권한 UI를 포함한 `settings.json` 직접 변경은 재생성 결과와 다르면 표류다. 프로젝트 변경은 프로젝트 입력에 옮긴 뒤 재생성한다.
+
+### Codex 진입점
+
+- `.agents/skills/`에 공통 스킬 진입점을 배포한다. 각 진입점은 `.claude/skills/`의 공유 본문을 읽고, 본문의 상대 링크는 본문이 있는 디렉터리 기준으로 해석한다.
+- `.codex/hooks.json`과 `.codex/workflow-hook.py`는 공통 배포본이다. 세션 시작 시 저장소 루트의 `CODING_STANDARDS.md`에서 Claude와 같은 구현 관련 절을 주입한다. 셸의 브랜치 변경과 `apply_patch` 쓰기 경로는 기존 검사로 전달한다.
+- 프로젝트 고유 Codex 훅은 프로젝트 소유 `.codex/config.toml`에 등록할 수 있다. 프로젝트 정책이 필요한 경우 사용하는 도구 경로마다 실행 전 차단을 확인한다. 프로젝트 전환 전에 런타임에서 공통·프로젝트 훅이 함께 활성화되는지 확인한다.
+- Codex 파일은 기존 배포·표류·역반영에서 일반 공통 파일로 처리한다. 프로젝트의 루트 `AGENTS.md`는 프로젝트 소유다. 코딩 표준의 위치가 기본 경로와 다르면 프로젝트 규칙에서 적용할 문서를 지정한다.
 
 ### Git hook
 
@@ -161,6 +168,7 @@ Pulsarlube-R을 기본으로 삼고 파일별 개선을 흡수한다. 다음 표
 - 배포 PR이 병합되고 기존 hook·스킬과 프로젝트 고유 동작이 유지된다.
 - 정상 표류 검사가 통과하며, 같은 정본으로 다시 배포하면 변경이 없다.
 - 배포본을 수정하면 검사가 막고, 역반영·재배포로 해소할 수 있다.
+- Codex 시범은 Pulsarlube-R의 실제 제품 업무를 Orca에서 홈 레포 경유와 프로젝트 직접 시작으로 각각 수행한다. 두 경로에서 공통 스킬과 업무에서 호출하는 후속 스킬, 수정 전 코딩 표준 적용, 필수 차단의 실행 시점, 프로젝트 검증과 Git 훅을 Claude 기준과 비교한다. 이후 전환 순서를 따르며 프로젝트별 필수 차단도 실제 사용 환경에서 확인한다. 차단 시점을 재현할 수 없으면 해당 프로젝트의 Codex 전환은 보류한다.
 
 R의 `tools/skills/scratch-layout/`은 R에 프로젝트 스킬 배포본이 생기고 전환 검증까지 마친 뒤 삭제한다. 사용자 레벨 `~/.claude/skills/scratch-layout`과 `~/.claude/skills/legacy-host-testing`은 네 프로젝트 모두 전환한 뒤 삭제한다.
 

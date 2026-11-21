@@ -54,9 +54,9 @@ try {
 
 `.claude/hooks/guard_temp_write.py` 는 안전망이지 보증이 아니다.
 
-- Claude `Write` 호출만 검사한다(`.claude/settings.json` 의 matcher). `Edit`·`NotebookEdit`·셸 명령·도구 내부 쓰기와 상대 경로는 검사하지 않는다. Codex에는 이 문서와 AGENTS.md가 적용되지만 Claude 훅은 적용되지 않는다.
+- Claude는 `Write`의 절대 경로를 검사한다. Codex는 신뢰된 프로젝트 훅을 통해 `apply_patch` 쓰기 경로를 절대 경로로 해석해 같은 검사를 적용한다. 셸 명령이나 도구 내부에서 생성하는 파일에는 이 문서의 출력 위치 규칙을 적용한다.
 - 막는 곳은 시스템 Temp 아래 절대 경로뿐이다. 홈·`orca` 등 그 밖의 외부 폴더(과거의 `em`, `pl_scratch`, `_m19`)는 막지 않는다. 다른 저장소나 `~/.claude` 처럼 정상적으로 쓰는 외부 경로와 구분할 허용 목록이 아직 없다.
-- 장애 시 통과(fail-open)한다. 입력 JSON을 읽지 못하거나 경로 해석에 실패하면 막지 않는다.
+- 공유 임시 파일 가드는 입력 JSON이나 경로 해석 오류를 처리할 때 호출을 통과시킨다. Codex 어댑터에서 도구 입력을 해석하거나 패치 경로를 확인하는 중 오류가 나면 도구 호출을 차단한다.
 - 시스템 Temp 아래 예외는 프로젝트 소유 `.claude/temp-write.project.json`의 `allow_temp_top_level` glob 목록으로 받는다. 기본값은 빈 목록이다.
 
 ## 건드리지 않는 것
