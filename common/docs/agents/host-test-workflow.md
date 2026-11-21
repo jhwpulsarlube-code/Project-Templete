@@ -15,7 +15,7 @@
    완료 게이트 적용 프로젝트는 `check_mutation_review.py`로 증거·현재 입력을 대조한다.
    보류 프로젝트는 프로젝트 ADR의 대체 완료 조건을 적용한다.
 5. 리뷰 반영 뒤 최종 측정·red 증명·적용 프로젝트의 stamp를 갱신한다.
-   전체 호스트 검증과 타깃 확인 결과를 티켓에 기록한다. 미완료 실기는 사람 작업으로 남긴다.
+   전체 호스트 검증과 타깃 확인 결과를 프로젝트 tracker 정책에 따라 기록한다. 미완료 실기는 담당 역할과 함께 사람 작업으로 남긴다.
 
 [도구 계약](../../.claude/skills/legacy-host-testing/TOOLING.md),
 [도구 참조](mutation-tool-reference.md), [리뷰 기준](review-host-tests.md)을 따른다.

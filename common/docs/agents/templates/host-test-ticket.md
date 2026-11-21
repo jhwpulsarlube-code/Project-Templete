@@ -1,7 +1,7 @@
 # <호스트 테스트/제품 변경 제목>
 
 설정 시 tracker 메타데이터와 복사될 위치 기준의 실제 링크를 적용한다.
-시작: docs/agents/host-test-workflow.md. 관찰표: 티켓 옆 observations.md.
+시작: docs/agents/host-test-workflow.md. 관찰표 위치와 결과 기록은 프로젝트 tracker 정책과 docs/agents/scratch-layout.md를 따른다.
 
 ## 범위
 
