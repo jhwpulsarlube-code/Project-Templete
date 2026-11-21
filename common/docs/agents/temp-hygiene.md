@@ -36,7 +36,7 @@ try {
 
 ## 증거
 
-측정값, 로그, 리뷰 및 의사결정을 뒷받침할 증거는 `docs/agents/scratch-layout.md`에 따라 `.scratch/<feature>/measure/`, `evidence/`, `review/` 등에 보존한다. 필요한 증거는 임시 폴더를 정리하기 전에 보존하고 확인한다.
+측정값, 로그, 리뷰 및 의사결정을 뒷받침할 증거는 `docs/agents/scratch-layout.md`에 따라 `.scratch/<feature>/measure/`, `evidence/`, `review/` 등에 보존한다. 필요한 증거는 임시 폴더를 정리하기 전에 보존하고 확인한다. 검토 JSON이나 기준선이 참조하는 파일은 기존 경로와 내용을 보존하고 정정은 새 파일에 남긴다. 공유할 때는 접근이 승인된 저장소의 커밋 고정 링크를 사용하며, 임시 작업 트리 산출물에 공유 가능한 링크가 없으면 그 상태를 표시한다.
 
 **Git이 무시하는 파일은 백업되지 않는다.** `*.log`, `.repo-temp/`, `.scratch/*/notes/`, `*-temp-artifacts/` 아래 격리 사본이 그렇다. 판정·결정을 뒷받침하는 증거는 추적되는 형식(`.md`/`.json`)으로 남긴다. 거기에 명령, 날짜, 측정한 HEAD, 핵심 출력, 원본 SHA-256 을 적는다. 원본이 로그나 격리 사본뿐이면 요약 `.md` 를 함께 두고, 원본 위치와 백업 위치(없으면 "백업 없음")를 근거 문서에 적는다.
 
@@ -54,9 +54,9 @@ try {
 
 `.claude/hooks/guard_temp_write.py` 는 안전망이지 보증이 아니다.
 
-- Claude `Write` 호출만 검사한다(`.claude/settings.json` 의 matcher). `Edit`·`NotebookEdit`·셸 명령·도구 내부 쓰기와 상대 경로는 검사하지 않는다. Codex에는 이 문서와 AGENTS.md가 적용되지만 Claude 훅은 적용되지 않는다.
+- Claude는 `Write`의 절대 경로를 검사한다. Codex는 신뢰된 프로젝트 훅을 통해 `apply_patch` 쓰기 경로를 절대 경로로 해석해 같은 검사를 적용한다. 셸 명령이나 도구 내부에서 생성하는 파일에는 이 문서의 출력 위치 규칙을 적용한다.
 - 막는 곳은 시스템 Temp 아래 절대 경로뿐이다. 홈·`orca` 등 그 밖의 외부 폴더(과거의 `em`, `pl_scratch`, `_m19`)는 막지 않는다. 다른 저장소나 `~/.claude` 처럼 정상적으로 쓰는 외부 경로와 구분할 허용 목록이 아직 없다.
-- 장애 시 통과(fail-open)한다. 입력 JSON을 읽지 못하거나 경로 해석에 실패하면 막지 않는다.
+- 공유 임시 파일 가드는 입력 JSON이나 경로 해석 오류를 처리할 때 호출을 통과시킨다. Codex 어댑터에서 도구 입력을 해석하거나 패치 경로를 확인하는 중 오류가 나면 도구 호출을 차단한다.
 - 시스템 Temp 아래 예외는 프로젝트 소유 `.claude/temp-write.project.json`의 `allow_temp_top_level` glob 목록으로 받는다. 기본값은 빈 목록이다.
 
 ## 건드리지 않는 것

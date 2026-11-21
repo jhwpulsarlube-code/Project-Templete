@@ -1,0 +1,4 @@
+.gitattributes text eol=lf
+skills/legacy-host-testing/SKILL.md text eol=lf
+skills/renesas-rl78/SKILL.md text eol=lf
+skills/scratch-layout/SKILL.md text eol=lf

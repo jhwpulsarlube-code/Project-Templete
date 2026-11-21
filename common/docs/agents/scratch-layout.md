@@ -14,8 +14,8 @@
 | 탐색 노트·서브에이전트 중간 메모 | `.scratch/<feature>/notes/` — 커밋 제외(루트 `.gitignore`의 `.scratch/*/notes/`), 결론만 spec·티켓에 옮긴다 |
 | teach 학습 워크스페이스 | `.learning/` (`MISSION.md`·`NOTES.md`·`RESOURCES.md`·`lessons/`·`reference/`·`learning-records/`·`assets/`) — teach 는 이 디렉터리에서 실행 |
 
-하위 폴더 이름은 영어 소문자 단수다. 이 규칙 이전에 만든 기존 파일은 해당 기능을 다시 열 때 옮긴다.
-검토 JSON이 해시로 묶은 관찰표·근거 파일은 내용을 고치지 않는다(이동만).
+하위 폴더 이름은 영어 소문자 단수다. 기존 파일을 옮기기 전에 검토 JSON과 기준선의 참조를 확인한다.
+해시나 경로로 고정된 관찰표·근거·원장은 기존 경로와 내용을 보존한다. 정정은 새 파일에 기록하고 현재 검토에 반영할 때 경로와 해시를 갱신해 다시 검증한다.
 이동 도구: `.claude/skills/scratch-layout/scripts/scratch_layout.py`. 공통 자산 갱신은 원본 저장소의 배포 흐름을 따른다.
 
 The project tracker and issue-file policy are defined in `docs/agents/workflow-project.md`.
